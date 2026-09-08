@@ -16,6 +16,7 @@ from langchain_community.document_loaders import WebBaseLoader
 from chain import Chain
 from portfolio import Portfolio
 import tracker
+import email_sync
 
 sys.path.append(os.path.dirname(__file__))
 
@@ -288,6 +289,98 @@ html, body, [class*="css"] {
     line-height: 1.7;
     color: #e2e8f0;
     box-shadow: 0 15px 30px -10px rgba(0, 0, 0, 0.5);
+}
+
+/* Timeline & Conversation Flow Components */
+.timeline-card {
+    background: rgba(15, 23, 42, 0.85);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 14px;
+    padding: 1.25rem;
+    margin-bottom: 1rem;
+    position: relative;
+}
+
+.timeline-step {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.8rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 0.25rem 0.65rem;
+    border-radius: 6px;
+    margin-bottom: 0.6rem;
+}
+.timeline-step.sent {
+    background: rgba(99, 102, 241, 0.15);
+    color: #a5b4fc;
+    border: 1px solid rgba(99, 102, 241, 0.4);
+}
+.timeline-step.received {
+    background: rgba(34, 197, 94, 0.15);
+    color: #86efac;
+    border: 1px solid rgba(34, 197, 94, 0.4);
+}
+.timeline-step.analysis {
+    background: rgba(234, 179, 8, 0.15);
+    color: #fde047;
+    border: 1px solid rgba(234, 179, 8, 0.4);
+}
+
+.confidence-badge-high {
+    background: rgba(34, 197, 94, 0.2);
+    color: #4ade80;
+    border: 1px solid rgba(34, 197, 94, 0.5);
+    padding: 0.2rem 0.6rem;
+    border-radius: 9999px;
+    font-size: 0.75rem;
+    font-weight: 700;
+}
+.confidence-badge-medium {
+    background: rgba(234, 179, 8, 0.2);
+    color: #facc15;
+    border: 1px solid rgba(234, 179, 8, 0.5);
+    padding: 0.2rem 0.6rem;
+    border-radius: 9999px;
+    font-size: 0.75rem;
+    font-weight: 700;
+}
+.confidence-badge-low {
+    background: rgba(239, 68, 68, 0.2);
+    color: #f87171;
+    border: 1px solid rgba(239, 68, 68, 0.5);
+    padding: 0.2rem 0.6rem;
+    border-radius: 9999px;
+    font-size: 0.75rem;
+    font-weight: 700;
+}
+
+.entity-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 0.75rem;
+    margin-top: 0.8rem;
+}
+.entity-pill {
+    background: rgba(30, 41, 59, 0.8);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 10px;
+    padding: 0.6rem 0.9rem;
+    font-size: 0.85rem;
+}
+.entity-label {
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: #94a3b8;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 0.2rem;
+}
+.entity-val {
+    font-weight: 600;
+    color: #f1f5f9;
 }
 
 section[data-testid="stSidebar"] {
@@ -1239,6 +1332,7 @@ with tab_studio:
             col_act1, col_act2, col_act3, col_act4 = st.columns([1.5, 1.2, 1.3, 1.1])
             
             user_sender_email = current_user.get("email", "")
+            outreach_msg_id = f"<outreach_{user_id}_{int(datetime.now().timestamp())}_{idx}@{user_sender_email.split('@')[-1] if '@' in user_sender_email else 'outreachai.local'}>"
             subject_encoded = urllib.parse.quote(chosen_subject)
             body_encoded = urllib.parse.quote(final_email_content)
             mailto_to = target_email.strip() if target_email else ""
@@ -1264,7 +1358,9 @@ with tab_studio:
                             match_score=85,
                             subject_line=chosen_subject,
                             email_body=final_email_content,
-                            status="Applied"
+                            status="Applied",
+                            message_id=outreach_msg_id,
+                            sender_email=user_sender_email
                         )
                     else:
                         mailto_link = f"mailto:{mailto_to}?subject={subject_encoded}&body={body_encoded}"
@@ -1311,20 +1407,102 @@ with tab_studio:
                     match_score=85,
                     subject_line=chosen_subject,
                     email_body=final_email_content,
-                    status="Applied"
+                    status="Applied",
+                    message_id=outreach_msg_id,
+                    sender_email=user_sender_email
                 )
                 st.toast(f"✅ Saved application for {company_name} to Tracker!", icon="📂")
 
             st.markdown('</div>', unsafe_allow_html=True)
 
 # ---------------------------------------------------------
-# TAB 5: Application Tracker & History
+# TAB 5: Application Tracker & Automatic Reply Intelligence
 # ---------------------------------------------------------
 with tab_tracker:
     st.markdown('<div class="glass-card">', unsafe_allow_html=True)
-    st.markdown('<div class="card-header">🗂️ Application Pipeline & Follow-Up Manager</div>', unsafe_allow_html=True)
+    st.markdown('<div class="card-header">🗂️ Application Pipeline & Automatic Reply Intelligence</div>', unsafe_allow_html=True)
 
+    # Top Control Bar: Sync & Simulator
+    col_tb1, col_tb2 = st.columns([1.5, 1])
+    with col_tb1:
+        st.markdown("##### 📬 Automatic Mailbox Reply Sync")
+        sync_cfg = tracker.get_user_mail_config(user_id)
+        last_sync_txt = sync_cfg.get("last_synced_at") or "Never"
+        st.caption(f"Sync incoming emails from **{sync_cfg.get('email_address') or current_user.get('email')}** via IMAP (Last synced: `{last_sync_txt}`).")
+        
+        col_sbtn1, col_sbtn2 = st.columns(2)
+        with col_sbtn1:
+            if st.button("🔄 Sync & Check Replies", key="btn_sync_mailbox", type="primary", use_container_width=True):
+                with st.spinner("Connecting to mailbox and scanning for replies..."):
+                    sync_res = email_sync.sync_user_mailbox(user_id=user_id, chain_instance=chain)
+                    if sync_res.get("success"):
+                        st.toast(f"✅ Sync complete! Checked {sync_res.get('synced_count', 0)} messages, matched {sync_res.get('matched_count', 0)} replies.", icon="📬")
+                        st.rerun()
+                    else:
+                        st.error(f"⚠️ {sync_res.get('error')}")
+        with col_sbtn2:
+            st.caption("Auto-checks In-Reply-To, References, and Message-IDs.")
+
+    with col_tb2:
+        with st.expander("⚙️ Mailbox IMAP Credentials", expanded=False):
+            cfg_host = st.text_input("IMAP Host:", value=sync_cfg.get("imap_host", "imap.gmail.com"), key="cfg_imap_host")
+            cfg_port = st.number_input("IMAP Port:", value=sync_cfg.get("imap_port", 993), key="cfg_imap_port")
+            cfg_email = st.text_input("Mailbox Email:", value=sync_cfg.get("email_address", current_user.get("email", "")), key="cfg_email_addr")
+            cfg_pwd = st.text_input("App Password (16-char for Gmail):", type="password", value=sync_cfg.get("app_password", ""), key="cfg_app_pwd", help="For Gmail, generate an App Password in Google Account Settings > Security.")
+            if st.button("💾 Save Mailbox Config", key="btn_save_mail_cfg"):
+                tracker.save_user_mail_config(user_id=user_id, imap_host=cfg_host, imap_port=int(cfg_port), email_address=cfg_email, app_password=cfg_pwd)
+                st.toast("✅ Mailbox settings saved!", icon="💾")
+                st.rerun()
+
+    # Simulator for instant verification
     all_apps = tracker.get_all_applications(user_id=user_id)
+    if all_apps:
+        with st.expander("🧪 Test & Simulate Recruiter Reply (Instant Verification)", expanded=False):
+            st.caption("Simulate an incoming company reply to test deterministic matching, quoted-text cleaning, and AI entity extraction without waiting for a real email.")
+            col_sim1, col_sim2 = st.columns([1, 1.5])
+            with col_sim1:
+                app_options = {f"{a['company']} - {a['role']} (ID #{a['id']})": a['id'] for a in all_apps}
+                selected_app_label = st.selectbox("Target Application to Reply To:", options=list(app_options.keys()))
+                sim_app_id = app_options[selected_app_label]
+                
+                preset_type = st.selectbox(
+                    "Choose Realistic Reply Scenario:",
+                    [
+                        "1. Interview Invitation (with Google Meet Link)",
+                        "2. Technical Coding Assessment (with Deadline)",
+                        "3. Candidate Shortlisted / Additional Info",
+                        "4. Formal Job Offer",
+                        "5. Polite Rejection"
+                    ]
+                )
+
+            with col_sim2:
+                default_sim_texts = {
+                    "1. Interview Invitation (with Google Meet Link)": "Hi Candidate,\n\nThanks for reaching out! We reviewed your profile and were really impressed by your projects.\n\nWe would love to invite you for a 45-minute technical video interview on Thursday, Oct 15 at 2:00 PM EST.\n\nYou can join using this Google Meet link: https://meet.google.com/abc-defg-hij\n\nPlease let us know if that time works for you!\n\nBest regards,\nSarah Jenkins\nHead of Engineering Recruiting",
+                    "2. Technical Coding Assessment (with Deadline)": "Hello,\n\nThank you for your application. As a next step in our process, please complete our online coding challenge on HackerRank: https://hackerrank.com/test/apex-ai-dev\n\nThe test must be completed within 72 hours (Deadline: Sunday at 11:59 PM EST).\n\nGood luck,\nTalent Acquisition Team",
+                    "3. Candidate Shortlisted / Additional Info": "Dear Candidate,\n\nYour application has been shortlisted for the next review stage. Could you please send over your updated GitHub repository links and confirm your earliest start date availability?\n\nThanks,\nHiring Manager",
+                    "4. Formal Job Offer": "Dear Candidate,\n\nOn behalf of our entire leadership team, we are thrilled to offer you the position! We have attached your formal offer letter and compensation package.\n\nPlease review and confirm acceptance by next Monday.\n\nWarm congratulations,\nVP of People",
+                    "5. Polite Rejection": "Hi,\n\nThank you for taking the time to share your application. Although your background is impressive, we have decided to move forward with another candidate whose experience more closely matches our immediate needs.\n\nWe wish you all the best in your job search."
+                }
+                custom_sim_text = st.text_area("Simulated Email Text:", value=default_sim_texts.get(preset_type, ""), height=150)
+                if st.button("🚀 Run Reply Detection & AI Analysis", type="primary", key="btn_run_sim"):
+                    with st.spinner("Processing incoming reply, running deterministic matcher, and extracting entities..."):
+                        sim_res = email_sync.simulate_incoming_reply(
+                            user_id=user_id,
+                            app_id=sim_app_id,
+                            raw_reply_text=custom_sim_text,
+                            chain_instance=chain
+                        )
+                        if sim_res.get("status") == "SUCCESS":
+                            st.balloons()
+                            st.success(f"🎉 **Reply Detected & Processed!** Matched to **{sim_res.get('company')}** with **{sim_res.get('confidence')}** Confidence. Status updated!")
+                            st.rerun()
+                        elif sim_res.get("status") == "SKIPPED_ALREADY_PROCESSED":
+                            st.warning("⚠️ This message has already been processed (Idempotent protection active).")
+                        else:
+                            st.error(f"⚠️ Simulation failed: {sim_res.get('error')}")
+
+    st.markdown("<hr>", unsafe_allow_html=True)
 
     if not all_apps:
         st.info("💡 No applications saved yet. Generate and send an outreach email in Tab 4 to automatically log it here!")
@@ -1333,7 +1511,7 @@ with tab_tracker:
         applied_count = sum(1 for a in all_apps if a["status"] in ["Applied", "Sent"])
         interview_count = sum(1 for a in all_apps if a["status"] in ["Interview Scheduled", "Interviewing"])
         offer_count = sum(1 for a in all_apps if a["status"] == "Offer")
-        replied_count = sum(1 for a in all_apps if a["status"] == "Reply Received")
+        replied_count = sum(1 for a in all_apps if a["status"] in ["Reply Received", "Assessment / Test"])
 
         col_stat1, col_stat2, col_stat3, col_stat4 = st.columns(4)
         col_stat1.metric("Total Outreach", total_apps)
@@ -1347,7 +1525,7 @@ with tab_tracker:
         with col_flt1:
             search_query = st.text_input("🔍 Search by Company or Role:", placeholder="e.g. Apex Technologies")
         with col_flt2:
-            status_filter = st.selectbox("Filter by Status:", ["All", "Applied", "Reply Received", "Interview Scheduled", "Drafted", "Offer", "Archived"])
+            status_filter = st.selectbox("Filter by Status:", ["All", "Applied", "Reply Received", "Interview Scheduled", "Assessment / Test", "Offer", "Rejected", "Drafted", "Archived"])
 
         filtered_apps = all_apps
         if search_query:
@@ -1355,32 +1533,168 @@ with tab_tracker:
         if status_filter != "All":
             filtered_apps = [a for a in filtered_apps if a["status"] == status_filter]
 
-        st.markdown(f"#### Active Applications ({len(filtered_apps)})")
+        st.markdown(f"#### Active Applications & Reply Conversations ({len(filtered_apps)})")
 
         for app in filtered_apps:
-            with st.expander(f"💼 **{app['company']}** — {app['role']} [{app['status']}]", expanded=(app["status"] in ["Interview Scheduled", "Reply Received"])):
-                col_info1, col_info2 = st.columns([1.5, 1])
-                with col_info1:
+            # Check conversation history & reply analysis
+            app_messages = tracker.get_application_messages(app["id"])
+            latest_analysis = tracker.get_latest_reply_analysis(app["id"])
+            received_msgs = [m for m in app_messages if m["direction"] == "RECEIVED"]
+
+            has_reply = len(received_msgs) > 0 or app["status"] in ["Interview Scheduled", "Reply Received", "Offer", "Assessment / Test"]
+            expander_title = f"💼 **{app['company']}** — {app['role']} [{app['status']}]"
+            if latest_analysis and latest_analysis.get("category"):
+                expander_title += f" • 📬 {latest_analysis.get('category')}"
+
+            with st.expander(expander_title, expanded=has_reply):
+                # ---------------------------------------------------------
+                # Step 1: Original Sent Outreach
+                # ---------------------------------------------------------
+                st.markdown("""
+                <div class="timeline-card">
+                    <div class="timeline-step sent">📤 Step 1: Original Sent Outreach</div>
+                """, unsafe_allow_html=True)
+                
+                col_sent1, col_sent2 = st.columns([1.5, 1])
+                with col_sent1:
                     st.markdown(f"**Recipient:** `{app['recipient_email'] or 'N/A'}`")
+                    st.markdown(f"**Subject:** *{app['subject_line']}*")
+                with col_sent2:
                     st.markdown(f"**Date Applied:** {app['applied_at'] or app['created_at']}")
-                    if app.get("last_followup_at"):
-                        st.markdown(f"**Last Followed Up:** {app['last_followup_at']}")
-                    st.markdown(f"**Subject Line:** *{app['subject_line']}*")
-                with col_info2:
+                    if app.get("last_message_id"):
+                        st.caption(f"RFC Message-ID: `{app['last_message_id']}`")
+                st.markdown("</div>", unsafe_allow_html=True)
+
+                # ---------------------------------------------------------
+                # Step 2 & 3: Company Reply Detected & AI Intelligence
+                # ---------------------------------------------------------
+                if received_msgs:
+                    latest_reply = received_msgs[-1]
+                    conf_level = latest_reply.get("confidence", "HIGH")
+                    conf_class = "confidence-badge-high" if conf_level == "HIGH" else ("confidence-badge-medium" if conf_level == "MEDIUM" else "confidence-badge-low")
+
+                    st.markdown(f"""
+                    <div class="timeline-card" style="border-left: 4px solid #22c55e;">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div class="timeline-step received">📥 Step 2: Company Reply Automatically Detected</div>
+                            <span class="{conf_class}">● {conf_level} CONFIDENCE MATCH</span>
+                        </div>
+                        <div style="font-size: 0.88rem; color: #94a3b8; margin-bottom: 0.6rem;">
+                            <b>From:</b> {latest_reply.get('sender_email')} | <b>Received:</b> {latest_reply.get('received_at')}
+                        </div>
+                        <div style="background: rgba(15, 23, 42, 0.6); padding: 0.85rem; border-radius: 8px; font-size: 0.9rem; white-space: pre-wrap; color: #e2e8f0; max-height: 180px; overflow-y: auto;">{latest_reply.get('cleaned_body') or latest_reply.get('body_text')}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                    if latest_analysis:
+                        cat_color = "#10b981" if latest_analysis.get("category") == "Offer" else ("#6366f1" if "Interview" in latest_analysis.get("category", "") else "#f59e0b")
+                        st.markdown(f"""
+                        <div class="timeline-card" style="border-left: 4px solid {cat_color};">
+                            <div class="timeline-step analysis">🤖 Step 3: AI Intelligence & Entity Extraction</div>
+                            <h4 style="margin-top: 0.2rem; color: #f8fafc;">🎯 Category: <span style="color: {cat_color};">{latest_analysis.get('category')}</span></h4>
+                        """, unsafe_allow_html=True)
+
+                        # Entity Grid
+                        col_e1, col_e2, col_e3 = st.columns(3)
+                        with col_e1:
+                            if latest_analysis.get("interview_date") or latest_analysis.get("interview_time"):
+                                st.markdown(f"""
+                                <div class="entity-pill">
+                                    <div class="entity-label">📅 Interview Date & Time</div>
+                                    <div class="entity-val">{latest_analysis.get('interview_date', '')} {latest_analysis.get('interview_time', '')}</div>
+                                </div>
+                                """, unsafe_allow_html=True)
+                            if latest_analysis.get("interview_type"):
+                                st.markdown(f"""
+                                <div class="entity-pill" style="margin-top: 0.5rem;">
+                                    <div class="entity-label">💻 Format / Type</div>
+                                    <div class="entity-val">{latest_analysis.get('interview_type')}</div>
+                                </div>
+                                """, unsafe_allow_html=True)
+
+                        with col_e2:
+                            meet_url = latest_analysis.get("meeting_link")
+                            if meet_url:
+                                st.markdown(f"""
+                                <div class="entity-pill">
+                                    <div class="entity-label">🔗 Meeting Link</div>
+                                    <div class="entity-val"><a href="{meet_url}" target="_blank" style="color: #38bdf8; font-weight: 700;">Open Meeting / Test ➔</a></div>
+                                </div>
+                                """, unsafe_allow_html=True)
+                            if latest_analysis.get("deadline"):
+                                st.markdown(f"""
+                                <div class="entity-pill" style="margin-top: 0.5rem;">
+                                    <div class="entity-label">⏳ Response Deadline</div>
+                                    <div class="entity-val" style="color: #f87171;">{latest_analysis.get('deadline')}</div>
+                                </div>
+                                """, unsafe_allow_html=True)
+
+                        with col_e3:
+                            if latest_analysis.get("recruiter_contact"):
+                                st.markdown(f"""
+                                <div class="entity-pill">
+                                    <div class="entity-label">👤 Recruiter Contact</div>
+                                    <div class="entity-val">{latest_analysis.get('recruiter_contact')}</div>
+                                </div>
+                                """, unsafe_allow_html=True)
+                            if latest_analysis.get("requested_documents"):
+                                st.markdown(f"""
+                                <div class="entity-pill" style="margin-top: 0.5rem;">
+                                    <div class="entity-label">📄 Requested Docs</div>
+                                    <div class="entity-val">{latest_analysis.get('requested_documents')}</div>
+                                </div>
+                                """, unsafe_allow_html=True)
+
+                        if latest_analysis.get("required_action"):
+                            st.markdown(f"""
+                            <div style="background: rgba(99, 102, 241, 0.15); border: 1px solid rgba(99, 102, 241, 0.4); border-radius: 8px; padding: 0.75rem 1rem; margin-top: 0.8rem; color: #c7d2fe; font-size: 0.9rem;">
+                                <b>⚡ Required Action:</b> {latest_analysis.get('required_action')}
+                            </div>
+                            """, unsafe_allow_html=True)
+
+                        if latest_analysis.get("important_notes"):
+                            st.caption(f"📝 Notes: {latest_analysis.get('important_notes')}")
+
+                        if st.button(f"🔍 Re-Analyze Reply", key=f"reanalyze_{app['id']}"):
+                            with st.spinner("Re-analyzing reply text with AI..."):
+                                re_res = chain.analyze_reply(
+                                    reply_text=latest_reply.get("cleaned_body") or latest_reply.get("body_text", ""),
+                                    original_job_context={"role": app["role"], "company": app["company"]}
+                                )
+                                tracker.save_reply_analysis(app["id"], latest_reply.get("message_id"), re_res)
+                                st.toast("✅ Re-analysis complete!", icon="🤖")
+                                st.rerun()
+
+                        st.markdown("</div>", unsafe_allow_html=True)
+
+                # ---------------------------------------------------------
+                # Step 4: Application Pipeline & Actions
+                # ---------------------------------------------------------
+                st.markdown("<br>", unsafe_allow_html=True)
+                col_act_left, col_act_right = st.columns([1, 1.2])
+                with col_act_left:
                     current_status = app["status"]
-                    status_options = ["Drafted", "Applied", "Reply Received", "Interview Scheduled", "Offer", "Archived"]
+                    status_options = ["Drafted", "Applied", "Reply Received", "Interview Scheduled", "Assessment / Test", "Offer", "Rejected", "Archived"]
                     status_idx = status_options.index(current_status) if current_status in status_options else 0
                     
-                    new_status = st.selectbox("Update Status / Reply Received:", status_options, index=status_idx, key=f"status_select_{app['id']}")
+                    new_status = st.selectbox("Update Pipeline Status:", status_options, index=status_idx, key=f"status_select_{app['id']}")
                     if new_status != current_status:
                         tracker.update_application_status(app["id"], new_status)
                         st.toast(f"Status updated to '{new_status}'!", icon="✅")
                         st.rerun()
 
-                current_notes = st.text_area("Recruiter Notes / Next Steps:", value=app.get("notes", ""), key=f"notes_{app['id']}", height=80)
-                if st.button("💾 Save Notes", key=f"save_notes_{app['id']}"):
-                    tracker.update_application_status(app["id"], app["status"], notes=current_notes)
-                    st.toast("Notes saved!", icon="📝")
+                with col_act_right:
+                    current_notes = st.text_area("Recruiter Notes / Next Steps:", value=app.get("notes", ""), key=f"notes_{app['id']}", height=80)
+                    col_save_n, col_del_a = st.columns([1, 1])
+                    with col_save_n:
+                        if st.button("💾 Save Notes", key=f"save_notes_{app['id']}"):
+                            tracker.update_application_status(app["id"], app["status"], notes=current_notes)
+                            st.toast("Notes saved!", icon="📝")
+                    with col_del_a:
+                        if st.button("🗑️ Delete Application", key=f"del_app_{app['id']}"):
+                            tracker.delete_application(app["id"])
+                            st.toast(f"Deleted application for {app['company']}", icon="🗑️")
+                            st.rerun()
 
                 st.markdown("##### ⚡ Follow-Up Sequence Generator")
                 if st.button(f"✉️ Generate Follow-Up Email for {app['company']}", key=f"gen_follow_{app['id']}"):
@@ -1398,9 +1712,17 @@ with tab_tracker:
                         </div>
                         """, unsafe_allow_html=True)
 
-                if st.button("🗑️ Delete Application", key=f"del_app_{app['id']}"):
-                    tracker.delete_application(app["id"])
-                    st.toast(f"Deleted application for {app['company']}", icon="🗑️")
-                    st.rerun()
+        # Unmatched incoming replies section
+        unmatched_list = tracker.get_unmatched_replies(user_id=user_id)
+        if unmatched_list:
+            with st.expander(f"⚠️ Unmatched / Needs Review Incoming Emails ({len(unmatched_list)})", expanded=False):
+                st.caption("These emails arrived from companies but could not be confidently linked to an existing application. No application status was modified.")
+                for un_msg in unmatched_list:
+                    st.markdown(f"""
+                    <div style="background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 10px; padding: 0.85rem; margin-bottom: 0.6rem;">
+                        <b>From:</b> {un_msg['sender_email']} | <b>Subject:</b> {un_msg['subject']}<br>
+                        <span style="font-size: 0.82rem; color: #94a3b8;">{un_msg.get('cleaned_body', '')[:200]}...</span>
+                    </div>
+                    """, unsafe_allow_html=True)
 
     st.markdown('</div>', unsafe_allow_html=True)

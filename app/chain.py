@@ -342,3 +342,105 @@ Return a valid JSON object with:
             "subject": f"Following up: {job.get('role', 'Application')} - {user_name}",
             "body": f"Hi Hiring Team,\n\nI hope you're having a great week! I'm following up on my application for the {job.get('role', 'open')} role at {job.get('company', 'your company')} that I sent a few days ago.\n\nI remains very excited about the mission and would love the opportunity to briefly connect.\n\nBest regards,\n{user_name}"
         }
+
+    def analyze_reply(self, reply_text: str, original_job_context: dict | None = None) -> dict:
+        """
+        Analyzes a recruiter/company reply email using Groq LLM.
+        Classifies response category and extracts structured interview details without hallucination.
+        """
+        job_ctx = original_job_context or {}
+        company_name = job_ctx.get("company", "the company")
+        role_name = job_ctx.get("role", "the role")
+
+        prompt_reply = PromptTemplate.from_template(
+            """### CONTEXT:
+The candidate previously applied for the position '{role}' at '{company}'.
+The company/recruiter has sent the following incoming email reply:
+
+### INCOMING EMAIL CONTENT:
+\"\"\"
+{reply_text}
+\"\"\"
+
+### INSTRUCTIONS:
+1. Act as an expert ATS and HR intelligence analyzer.
+2. Carefully analyze the company's message.
+3. Classify the email into EXACTLY ONE of the following standard categories:
+   - "Interview Invitation" (if inviting candidate for a video, phone, or technical interview)
+   - "Assessment / Test Invitation" (if sending a coding challenge, take-home test, or questionnaire)
+   - "Request for Additional Information" (if asking for portfolio, references, transcripts, availability)
+   - "Application Received / Acknowledgement" (automated or human confirmation that application is received)
+   - "Application Under Review" (actively reviewing profile/materials)
+   - "Shortlisted / Progressing" (passed preliminary round/positive progress)
+   - "Offer" (job offer or formal contract extension)
+   - "Rejection" (declined / position filled / not moving forward)
+   - "Follow-Up Required" (company asking a question or candidate needs to respond)
+   - "General Company Response" (inquiry, networking, or general outreach)
+   - "Unclear / Unknown" (irrelevant, spam, or non-actionable)
+
+4. Extract the following entity fields. IMPORTANT: If a field is NOT explicitly mentioned in the email, leave it as an empty string (""). DO NOT guess or invent missing details.
+   - `interview_date`: Date of the scheduled or proposed interview (e.g. "Thursday, Oct 12, 2026" or "")
+   - `interview_time`: Time of the interview including timezone (e.g. "2:00 PM EST" or "")
+   - `interview_type`: Format (e.g. "Video Call", "Phone Screen", "Technical Live Coding", "On-site", "Take-Home Test", or "")
+   - `meeting_link`: Extracted Zoom, Google Meet, Microsoft Teams, Calendly, or assessment URL (or "")
+   - `location`: Physical address or "Remote" (or "")
+   - `recruiter_contact`: Recruiter or interviewer name / title / email (or "")
+   - `requested_documents`: Any requested materials (e.g. "GitHub repos, References" or "")
+   - `deadline`: Explicit deadline date/time to respond or complete test (or "")
+   - `required_action`: 1 clear, actionable sentence instructing what the candidate must do next (e.g. "Confirm availability for Thursday at 2 PM EST via the Calendly link.")
+   - `important_notes`: 1-2 sentence concise summary of the key message.
+   - `suggested_pipeline_status`: Set to one of: ["Interview Scheduled", "Assessment / Test", "Offer", "Rejected", "Reply Received", "Under Review", "Applied"]
+
+Return ONLY a valid JSON object matching the requested schema.
+
+### JSON OUTPUT:"""
+        )
+
+        chain_reply = prompt_reply | self.llm
+        res = chain_reply.invoke({
+            "role": role_name,
+            "company": company_name,
+            "reply_text": reply_text[:3500]
+        })
+
+        try:
+            json_parser = JsonOutputParser()
+            parsed = json_parser.parse(res.content)
+            if isinstance(parsed, dict) and "category" in parsed:
+                return parsed
+        except Exception:
+            pass
+
+        # Fallback heuristic parser
+        lower = reply_text.lower()
+        if any(w in lower for w in ["interview", "chat", "zoom", "google meet", "teams", "calendly", "call", "schedule"]):
+            cat = "Interview Invitation"
+            status = "Interview Scheduled"
+        elif any(w in lower for w in ["assessment", "hackerrank", "codility", "test", "quiz", "challenge"]):
+            cat = "Assessment / Test Invitation"
+            status = "Assessment / Test"
+        elif any(w in lower for w in ["offer", "pleased to offer", "congratulations"]):
+            cat = "Offer"
+            status = "Offer"
+        elif any(w in lower for w in ["unfortunately", "not moving forward", "other candidates", "regret to inform"]):
+            cat = "Rejection"
+            status = "Rejected"
+        else:
+            cat = "Reply Received"
+            status = "Reply Received"
+
+        return {
+            "category": cat,
+            "confidence_level": "HIGH",
+            "interview_date": "",
+            "interview_time": "",
+            "interview_type": "",
+            "meeting_link": "",
+            "location": "",
+            "recruiter_contact": "",
+            "requested_documents": "",
+            "deadline": "",
+            "required_action": "Review the company's message and reply with your availability.",
+            "important_notes": reply_text[:200] + "...",
+            "suggested_pipeline_status": status
+        }
