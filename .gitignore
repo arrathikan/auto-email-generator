@@ -1,0 +1,14 @@
+.env
+*.env
+__pycache__/
+*.pyc
+.DS_Store
+app_env/
+*/app_env/
+vectorstore/
+*/vectorstore/
+uploads/
+*/uploads/
+data/
+*/data/
+*.db
