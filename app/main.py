@@ -514,16 +514,20 @@ def process_cv_to_dataframe(uploaded_file, chain: Chain) -> pd.DataFrame:
     structured_data = chain.extract_portfolio_data(raw_text)
     return pd.DataFrame(structured_data)
 
-def open_in_apple_mail(recipient_email: str, subject: str, body: str, attachment_path: str | None = None) -> tuple[bool, str]:
+def open_in_apple_mail(recipient_email: str, subject: str, body: str, attachment_path: str | None = None, sender_email: str | None = None) -> tuple[bool, str]:
     import subprocess
     try:
         safe_subject = subject.replace('\\', '\\\\').replace('"', '\\"')
         safe_body = body.replace('\\', '\\\\').replace('"', '\\"')
         safe_recipient = recipient_email.replace('\\', '\\\\').replace('"', '\\"') if recipient_email else ""
+        safe_sender = sender_email.replace('\\', '\\\\').replace('"', '\\"') if sender_email else ""
         
         script = 'tell application "Mail"\n'
         script += '    activate\n'
-        script += f'    set newMessage to make new outgoing message with properties {{subject:"{safe_subject}", content:"{safe_body}\\n\\n", visible:true}}\n'
+        props = f'subject:"{safe_subject}", content:"{safe_body}\\n\\n", visible:true'
+        if safe_sender:
+            props += f', sender:"{safe_sender}"'
+        script += f'    set newMessage to make new outgoing message with properties {{{props}}}\n'
         script += '    tell newMessage\n'
         if safe_recipient:
             script += f'        make new to recipient at end of to recipients with properties {{address:"{safe_recipient}"}}\n'
@@ -541,12 +545,14 @@ def open_in_apple_mail(recipient_email: str, subject: str, body: str, attachment
     except Exception as e:
         return False, str(e)
 
-def build_eml_message(recipient_email: str, subject: str, body: str, cv_bytes: bytes | None = None, cv_name: str | None = None) -> bytes:
+def build_eml_message(recipient_email: str, subject: str, body: str, cv_bytes: bytes | None = None, cv_name: str | None = None, sender_email: str | None = None) -> bytes:
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
     from email.mime.application import MIMEApplication
     
     msg = MIMEMultipart()
+    if sender_email:
+        msg["From"] = sender_email
     if recipient_email:
         msg["To"] = recipient_email
     msg["Subject"] = subject
@@ -1221,30 +1227,35 @@ with tab_studio:
                 st.session_state.recipient_email = target_email
             with col_target2:
                 st.markdown("<div style='margin-top: 1.8rem;'>", unsafe_allow_html=True)
+                sender_display = current_user.get("email", "")
+                if sender_display:
+                    st.markdown(f'<span class="status-pill success">👤 Sending As: <b>{sender_display}</b></span>', unsafe_allow_html=True)
                 if st.session_state.cv_filename:
-                    st.markdown(f'<span class="status-pill success">📎 Attached CV: <b>{st.session_state.cv_filename}</b></span>', unsafe_allow_html=True)
+                    st.markdown(f'<span class="status-pill success" style="margin-left: 0.5rem;">📎 CV: <b>{st.session_state.cv_filename}</b></span>', unsafe_allow_html=True)
                 else:
-                    st.markdown('<span class="status-pill warning">⚠️ No CV uploaded yet (upload in Tab 1)</span>', unsafe_allow_html=True)
+                    st.markdown('<span class="status-pill warning" style="margin-left: 0.5rem;">⚠️ No CV uploaded yet</span>', unsafe_allow_html=True)
                 st.markdown("</div>", unsafe_allow_html=True)
 
             col_act1, col_act2, col_act3, col_act4 = st.columns([1.5, 1.2, 1.3, 1.1])
             
+            user_sender_email = current_user.get("email", "")
             subject_encoded = urllib.parse.quote(chosen_subject)
             body_encoded = urllib.parse.quote(final_email_content)
             mailto_to = target_email.strip() if target_email else ""
-            gmail_link = f"https://mail.google.com/mail/?view=cm&fs=1&to={mailto_to}&su={subject_encoded}&body={body_encoded}"
+            gmail_link = f"https://mail.google.com/mail/?view=cm&fs=1&authuser={urllib.parse.quote(user_sender_email)}&to={mailto_to}&su={subject_encoded}&body={body_encoded}"
 
             with col_act1:
-                if st.button("✉️ Open in Mail App (CV Auto-Attached)", key=f"btn_apple_mail_{idx}", type="primary", use_container_width=True, help="Opens Apple Mail with recipient, subject, body, AND your uploaded CV already attached!"):
+                if st.button("✉️ Open in Mail App (CV Auto-Attached)", key=f"btn_apple_mail_{idx}", type="primary", use_container_width=True, help="Opens Apple Mail from your signed-in email address with recipient, subject, body, AND your uploaded CV already attached!"):
                     success, msg = open_in_apple_mail(
                         recipient_email=target_email,
                         subject=chosen_subject,
                         body=final_email_content,
-                        attachment_path=st.session_state.cv_file_path
+                        attachment_path=st.session_state.cv_file_path,
+                        sender_email=user_sender_email
                     )
                     if success:
                         st.balloons()
-                        st.success(f"🎉 **Apple Mail Opened!** Recipient `{target_email or 'Draft'}`, subject, and `{st.session_state.cv_filename or 'CV'}` are automatically attached. Simply hit **Send** in your Mail app!")
+                        st.success(f"🎉 **Apple Mail Opened!** Sending from `{user_sender_email}` to `{target_email or 'Draft'}` with `{st.session_state.cv_filename or 'CV'}` attached. Simply hit **Send** in your Mail app!")
                         tracker.save_application(
                             user_id=user_id,
                             company=company_name,
@@ -1270,7 +1281,8 @@ with tab_studio:
                     subject=chosen_subject,
                     body=final_email_content,
                     cv_bytes=st.session_state.cv_file_bytes,
-                    cv_name=st.session_state.cv_filename
+                    cv_name=st.session_state.cv_filename,
+                    sender_email=user_sender_email
                 )
                 st.download_button(
                     label="📎 Draft with Attached CV (.eml)",
