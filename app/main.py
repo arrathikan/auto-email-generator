@@ -1444,15 +1444,59 @@ with tab_tracker:
             st.caption("Auto-checks In-Reply-To, References, and Message-IDs.")
 
     with col_tb2:
-        with st.expander("⚙️ Mailbox IMAP Credentials", expanded=False):
-            cfg_host = st.text_input("IMAP Host:", value=sync_cfg.get("imap_host", "imap.gmail.com"), key="cfg_imap_host")
-            cfg_port = st.number_input("IMAP Port:", value=sync_cfg.get("imap_port", 993), key="cfg_imap_port")
-            cfg_email = st.text_input("Mailbox Email:", value=sync_cfg.get("email_address", current_user.get("email", "")), key="cfg_email_addr")
-            cfg_pwd = st.text_input("App Password (16-char for Gmail):", type="password", value=sync_cfg.get("app_password", ""), key="cfg_app_pwd", help="For Gmail, generate an App Password in Google Account Settings > Security.")
-            if st.button("💾 Save Mailbox Config", key="btn_save_mail_cfg"):
-                tracker.save_user_mail_config(user_id=user_id, imap_host=cfg_host, imap_port=int(cfg_port), email_address=cfg_email, app_password=cfg_pwd)
-                st.toast("✅ Mailbox settings saved!", icon="💾")
-                st.rerun()
+        with st.expander("⚙️ Mailbox Credentials", expanded=False):
+            cfg_email = st.text_input(
+                "Email Address:",
+                value=sync_cfg.get("email_address", current_user.get("email", "")),
+                key="cfg_email_addr",
+                placeholder="e.g. yourname@gmail.com"
+            )
+            cfg_pwd = st.text_input(
+                "Password / App Password:",
+                type="password",
+                value=sync_cfg.get("app_password", ""),
+                key="cfg_app_pwd",
+                placeholder="Enter password or 16-char App Password"
+            )
+            
+            show_advanced = st.checkbox("Custom server settings (optional)", value=False, key="chk_custom_imap")
+            if show_advanced:
+                cfg_host = st.text_input("IMAP Host:", value=sync_cfg.get("imap_host") or "imap.gmail.com", key="cfg_imap_host")
+                cfg_port = st.number_input("IMAP Port:", value=int(sync_cfg.get("imap_port") or 993), key="cfg_imap_port")
+            else:
+                cfg_host = ""
+                cfg_port = 993
+
+            if st.button("💾 Save & Verify Connection", key="btn_save_mail_cfg", type="primary", use_container_width=True):
+                if not cfg_email or "@" not in cfg_email:
+                    st.error("❌ Please enter a valid email address.")
+                elif not cfg_pwd:
+                    st.error("❌ Please enter your password.")
+                else:
+                    with st.spinner("🔄 Checking email and password with server..."):
+                        is_valid, msg, det_host, det_port = email_sync.verify_mailbox_credentials(
+                            email_address=cfg_email,
+                            password=cfg_pwd,
+                            host=cfg_host if show_advanced else "",
+                            port=int(cfg_port) if show_advanced else 993
+                        )
+                    if not is_valid:
+                        st.error("❌ The email address or password is wrong! Please check your credentials and try again.")
+                        if "@gmail.com" in cfg_email.lower():
+                            st.info("💡 **Gmail Notice:** Google accounts with 2-Step Verification require a 16-character **App Password** (not your regular login password). You can generate one at: [Google App Passwords](https://myaccount.google.com/apppasswords).")
+                        else:
+                            st.caption(f"Server response: {msg}")
+                    else:
+                        tracker.save_user_mail_config(
+                            user_id=user_id,
+                            imap_host=det_host,
+                            imap_port=det_port,
+                            email_address=cfg_email,
+                            app_password=cfg_pwd
+                        )
+                        st.success("✅ Connected successfully! Your email address and password are correct.")
+                        st.toast("✅ Mailbox verified & saved!", icon="🎉")
+                        st.rerun()
 
     # Simulator for instant verification
     all_apps = tracker.get_all_applications(user_id=user_id)

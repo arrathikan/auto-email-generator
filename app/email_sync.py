@@ -312,15 +312,79 @@ def process_single_incoming_email(user_id: int, email_data: dict, chain_instance
         "analysis": analysis
     }
 
+def auto_detect_imap_server(email_address: str) -> tuple[str, int]:
+    """
+    Auto-detects IMAP host and port based on the user's email domain.
+    """
+    clean_email = email_address.strip().lower()
+    domain = clean_email.split("@")[-1] if "@" in clean_email else ""
+    
+    if domain in ["gmail.com", "googlemail.com"]:
+        return "imap.gmail.com", 993
+    elif domain in ["outlook.com", "hotmail.com", "live.com", "office365.com"]:
+        return "outlook.office365.com", 993
+    elif domain in ["yahoo.com", "ymail.com", "rocketmail.com"]:
+        return "imap.mail.yahoo.com", 993
+    elif domain in ["icloud.com", "me.com", "mac.com"]:
+        return "imap.mail.me.com", 993
+    elif domain in ["zoho.com"]:
+        return "imap.zoho.com", 993
+    elif domain in ["aol.com"]:
+        return "imap.aol.com", 993
+    elif domain:
+        return f"imap.{domain}", 993
+    return "imap.gmail.com", 993
+
+def verify_mailbox_credentials(email_address: str, password: str, host: str = "", port: int = 993) -> tuple[bool, str, str, int]:
+    """
+    Verifies if the provided email address and password/app password are valid by testing an IMAP SSL login.
+    Returns (success: bool, message: str, detected_host: str, detected_port: int)
+    """
+    email_address = email_address.strip()
+    password = password.strip()
+
+    if not email_address or "@" not in email_address:
+        return False, "Please enter a valid email address.", "", port
+
+    if not password:
+        return False, "Please enter your email password or App Password.", "", port
+
+    detected_host = host.strip() if host else ""
+    detected_port = port or 993
+    if not detected_host:
+        detected_host, detected_port = auto_detect_imap_server(email_address)
+
+    try:
+        mail = imaplib.IMAP4_SSL(detected_host, detected_port)
+        if hasattr(mail, "sock") and mail.sock:
+            mail.sock.settimeout(10.0)
+        mail.login(email_address, password)
+        mail.logout()
+        return True, "Connected successfully! Credentials are valid.", detected_host, detected_port
+    except imaplib.IMAP4.error as e:
+        err_msg = str(e)
+        if "AUTHENTICATIONFAILED" in err_msg or "Invalid credentials" in err_msg or "Username and Password not accepted" in err_msg or "login failed" in err_msg.lower():
+            return False, "Wrong email address or password. Authentication failed.", detected_host, detected_port
+        return False, f"Mailbox authentication failed: {err_msg}", detected_host, detected_port
+    except Exception as e:
+        err_str = str(e)
+        if "timed out" in err_str.lower():
+            return False, f"Connection to {detected_host} timed out. Please check your internet connection.", detected_host, detected_port
+        return False, f"Could not connect to {detected_host}: {err_str}", detected_host, detected_port
+
 def sync_user_mailbox(user_id: int, chain_instance: Chain | None = None) -> dict:
     """
     Connects to the user's IMAP mailbox, performs incremental sync for new emails,
     matches replies deterministically, and runs AI analysis.
     """
     config = tracker.get_user_mail_config(user_id)
-    host = config.get("imap_host", "imap.gmail.com")
-    port = config.get("imap_port", 993)
     user_email = config.get("email_address", "")
+    host = config.get("imap_host", "")
+    port = config.get("imap_port", 993)
+    if not host and user_email:
+        host, port = auto_detect_imap_server(user_email)
+    elif not host:
+        host = "imap.gmail.com"
     app_pwd = config.get("app_password", "")
     last_uid = config.get("last_synced_uid", 0)
 
