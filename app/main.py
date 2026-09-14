@@ -1014,7 +1014,33 @@ with tab_profile:
                 st.error(f"⚠️ Error parsing file: {e}")
 
     if st.session_state.cv_filename:
-        st.markdown(f'<span class="status-pill success">📎 Attached CV for Outreach: <b>{st.session_state.cv_filename}</b></span>', unsafe_allow_html=True)
+        col_cv_bar1, col_cv_bar2 = st.columns([1.5, 1])
+        with col_cv_bar1:
+            st.markdown(f'<span class="status-pill success">📎 Attached CV for Outreach: <b>{st.session_state.cv_filename}</b></span>', unsafe_allow_html=True)
+        with col_cv_bar2:
+            if st.button("🪄 Auto-Fill Profile from CV", key="btn_autofill_profile", help="AI extracts candidate name, position, college, degree, and skills from your CV."):
+                if st.session_state.cv_file_path and os.path.isfile(st.session_state.cv_file_path):
+                    with st.spinner("🤖 Reading CV and extracting your details & portfolio..."):
+                        with open(st.session_state.cv_file_path, "rb") as f_cv:
+                            cv_raw_text = extract_text_from_file(f_cv)
+                        if cv_raw_text:
+                            p_info = chain.parse_candidate_profile_from_cv(cv_raw_text)
+                            if p_info.get("full_name") and p_info["full_name"] != "Candidate":
+                                st.session_state.user_name = p_info["full_name"]
+                            if p_info.get("position"):
+                                st.session_state.user_position = p_info["position"]
+                            if p_info.get("college"):
+                                st.session_state.user_college = p_info["college"]
+                            if p_info.get("degree"):
+                                st.session_state.user_study = p_info["degree"]
+                            if p_info.get("candidate_type"):
+                                st.session_state.candidate_type = p_info["candidate_type"]
+                            if p_info.get("portfolio"):
+                                st.session_state.portfolio_df = pd.DataFrame(p_info["portfolio"])
+                            save_current_user_profile()
+                            st.balloons()
+                            st.toast("🪄 Profile details and portfolio auto-filled from your CV!", icon="🎉")
+                            st.rerun()
 
     if st.session_state.portfolio_df is not None and not st.session_state.portfolio_df.empty:
         st.markdown("#### 🔍 Active Portfolio Items & Project Links:")
@@ -1329,7 +1355,7 @@ with tab_studio:
                     st.markdown('<span class="status-pill warning" style="margin-left: 0.5rem;">⚠️ No CV uploaded yet</span>', unsafe_allow_html=True)
                 st.markdown("</div>", unsafe_allow_html=True)
 
-            col_act1, col_act2, col_act3, col_act4 = st.columns([1.5, 1.2, 1.3, 1.1])
+            col_act0, col_act1, col_act2, col_act3, col_act4 = st.columns([1.5, 1.4, 1.1, 1.3, 1.0])
             
             user_sender_email = current_user.get("email", "")
             outreach_msg_id = f"<outreach_{user_id}_{int(datetime.now().timestamp())}_{idx}@{user_sender_email.split('@')[-1] if '@' in user_sender_email else 'outreachai.local'}>"
@@ -1338,8 +1364,40 @@ with tab_studio:
             mailto_to = target_email.strip() if target_email else ""
             gmail_link = f"https://mail.google.com/mail/?view=cm&fs=1&authuser={urllib.parse.quote(user_sender_email)}&to={mailto_to}&su={subject_encoded}&body={body_encoded}"
 
+            with col_act0:
+                if st.button("🚀 Send Email (Direct SMTP)", key=f"btn_smtp_send_{idx}", type="primary", use_container_width=True, help="Sends directly from your verified email address via SMTP with your CV attached automatically."):
+                    if not target_email or "@" not in target_email:
+                        st.error("❌ Please specify a valid Recruiter / Company Email above.")
+                    else:
+                        with st.spinner("Connecting to mail server and dispatching application..."):
+                            app_db_id = tracker.save_application(
+                                user_id=user_id,
+                                company=company_name,
+                                role=role_title,
+                                recipient_email=target_email,
+                                match_score=85,
+                                subject_line=chosen_subject,
+                                email_body=final_email_content,
+                                status="Drafted",
+                                sender_email=user_sender_email
+                            )
+                            smtp_res = email_sync.send_email_smtp(
+                                user_id=user_id,
+                                recipient_email=target_email,
+                                subject=chosen_subject,
+                                body_text=final_email_content,
+                                app_id=app_db_id,
+                                cv_path=st.session_state.cv_file_path
+                            )
+                            if smtp_res.get("success"):
+                                st.balloons()
+                                cv_note = f" with `{st.session_state.cv_filename}` attached" if smtp_res.get("attached_cv") else ""
+                                st.success(f"🎉 **Email Sent!** Delivered to `{target_email}`{cv_note}. Application logged as **Applied** in Tab 5!")
+                            else:
+                                st.error(f"⚠️ {smtp_res.get('error')}")
+
             with col_act1:
-                if st.button("✉️ Open in Mail App (CV Auto-Attached)", key=f"btn_apple_mail_{idx}", type="primary", use_container_width=True, help="Opens Apple Mail from your signed-in email address with recipient, subject, body, AND your uploaded CV already attached!"):
+                if st.button("✉️ Apple Mail (CV Attached)", key=f"btn_apple_mail_{idx}", use_container_width=True, help="Opens Apple Mail from your signed-in email address with recipient, subject, body, AND your uploaded CV already attached!"):
                     success, msg = open_in_apple_mail(
                         recipient_email=target_email,
                         subject=chosen_subject,
@@ -1368,7 +1426,7 @@ with tab_studio:
             
             with col_act2:
                 st.markdown(
-                    f'<a href="{gmail_link}" target="_blank" style="display: block; text-align: center; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.4); color: #fca5a5; padding: 0.65rem; border-radius: 10px; font-weight: 700; text-decoration: none;">📮 Open in Gmail</a>',
+                    f'<a href="{gmail_link}" target="_blank" style="display: block; text-align: center; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.4); color: #fca5a5; padding: 0.65rem; border-radius: 10px; font-weight: 700; text-decoration: none;">📮 Gmail Web</a>',
                     unsafe_allow_html=True
                 )
             with col_act3:
@@ -1421,6 +1479,17 @@ with tab_studio:
 with tab_tracker:
     st.markdown('<div class="glass-card">', unsafe_allow_html=True)
     st.markdown('<div class="card-header">🗂️ Application Pipeline & Automatic Reply Intelligence</div>', unsafe_allow_html=True)
+
+    # Automatic background check once per session when credentials are configured
+    if "auto_synced_session" not in st.session_state:
+        st.session_state.auto_synced_session = False
+
+    sync_cfg = tracker.get_user_mail_config(user_id)
+    if sync_cfg.get("app_password") and not st.session_state.auto_synced_session:
+        st.session_state.auto_synced_session = True
+        auto_res = email_sync.sync_user_mailbox(user_id=user_id, chain_instance=chain)
+        if auto_res.get("success") and auto_res.get("matched_count", 0) > 0:
+            st.toast(f"📬 Detected {auto_res['matched_count']} new company replies!", icon="🎉")
 
     # Top Control Bar: Sync & Simulator
     col_tb1, col_tb2 = st.columns([1.5, 1])
@@ -1741,20 +1810,52 @@ with tab_tracker:
                             st.rerun()
 
                 st.markdown("##### ⚡ Follow-Up Sequence Generator")
-                if st.button(f"✉️ Generate Follow-Up Email for {app['company']}", key=f"gen_follow_{app['id']}"):
-                    with st.spinner("Drafting follow-up email..."):
+                fu_key = f"fu_{app['id']}"
+                if st.button(f"✉️ Draft Follow-Up Email for {app['company']}", key=f"gen_follow_{app['id']}"):
+                    with st.spinner("Drafting polite follow-up with AI..."):
                         follow_res = chain.write_followup_mail(
                             job={"role": app["role"], "company": app["company"]},
                             user_name=st.session_state.user_name or "Candidate",
-                            days_since=4
+                            days_since=4,
+                            original_subject=app.get("subject_line", "")
                         )
-                        tracker.log_followup(app["id"])
-                        st.markdown(f"""
-                        <div class="email-preview-box" style="margin-top: 0.8rem;">
-                            <b>Subject:</b> {follow_res.get('subject')}<br><br>
-                            <div style="white-space: pre-wrap;">{follow_res.get('body')}</div>
-                        </div>
-                        """, unsafe_allow_html=True)
+                        st.session_state[f"{fu_key}_subj"] = follow_res.get('subject', f"Following up: {app.get('subject_line', '')}")
+                        st.session_state[f"{fu_key}_body"] = follow_res.get('body', '')
+
+                if f"{fu_key}_subj" in st.session_state:
+                    fu_subj_val = st.text_input("Follow-Up Subject:", value=st.session_state[f"{fu_key}_subj"], key=f"inp_fu_s_{app['id']}")
+                    fu_body_val = st.text_area("Follow-Up Email:", value=st.session_state[f"{fu_key}_body"], key=f"inp_fu_b_{app['id']}", height=120)
+                    col_fu1, col_fu2 = st.columns([1, 1])
+                    with col_fu1:
+                        if st.button("🚀 Send Follow-Up (Direct SMTP)", key=f"btn_send_fu_{app['id']}", type="primary", use_container_width=True):
+                            with st.spinner("Sending follow-up..."):
+                                fu_smtp_res = email_sync.send_email_smtp(
+                                    user_id=user_id,
+                                    recipient_email=app["recipient_email"],
+                                    subject=fu_subj_val,
+                                    body_text=fu_body_val,
+                                    app_id=app["id"],
+                                    cv_path=st.session_state.cv_file_path
+                                )
+                                if fu_smtp_res.get("success"):
+                                    tracker.log_followup(app["id"])
+                                    st.balloons()
+                                    st.success("🎉 Follow-up email sent successfully via SMTP!")
+                                    del st.session_state[f"{fu_key}_subj"]
+                                    del st.session_state[f"{fu_key}_body"]
+                                    st.rerun()
+                                else:
+                                    st.error(f"⚠️ {fu_smtp_res.get('error')}")
+                    with col_fu2:
+                        if st.button("✉️ Open in Apple Mail", key=f"btn_open_fu_apple_{app['id']}", use_container_width=True):
+                            open_in_apple_mail(
+                                recipient_email=app["recipient_email"],
+                                subject=fu_subj_val,
+                                body=fu_body_val,
+                                attachment_path=st.session_state.cv_file_path,
+                                sender_email=current_user.get("email", "")
+                            )
+                            tracker.log_followup(app["id"])
 
         # Unmatched incoming replies section
         unmatched_list = tracker.get_unmatched_replies(user_id=user_id)

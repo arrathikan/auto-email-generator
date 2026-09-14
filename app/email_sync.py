@@ -1,7 +1,10 @@
 import re
 import os
 import email
+import email.utils
 import imaplib
+import smtplib
+from email.message import EmailMessage
 from email.header import decode_header
 from datetime import datetime
 import tracker
@@ -511,3 +514,135 @@ def simulate_incoming_reply(user_id: int, app_id: int, raw_reply_text: str, subj
         email_data=email_data,
         chain_instance=chain_instance
     )
+
+def auto_detect_smtp_server(email_address: str) -> tuple[str, int]:
+    """
+    Auto-detects SMTP host and port based on the user's email domain.
+    Returns (host, port).
+    """
+    clean_email = email_address.strip().lower()
+    domain = clean_email.split("@")[-1] if "@" in clean_email else ""
+    
+    if domain in ["gmail.com", "googlemail.com"]:
+        return "smtp.gmail.com", 465
+    elif domain in ["outlook.com", "hotmail.com", "live.com", "office365.com"]:
+        return "smtp.office365.com", 587
+    elif domain in ["yahoo.com", "ymail.com", "rocketmail.com"]:
+        return "smtp.mail.yahoo.com", 465
+    elif domain in ["icloud.com", "me.com", "mac.com"]:
+        return "smtp.mail.me.com", 587
+    elif domain in ["zoho.com"]:
+        return "smtp.zoho.com", 465
+    elif domain in ["aol.com"]:
+        return "smtp.aol.com", 465
+    elif domain:
+        return f"smtp.{domain}", 465
+    return "smtp.gmail.com", 465
+
+def send_email_smtp(
+    user_id: int,
+    recipient_email: str,
+    subject: str,
+    body_text: str,
+    app_id: int | None = None,
+    cv_path: str | None = None,
+    smtp_host: str = "",
+    smtp_port: int | None = None
+) -> dict:
+    """
+    Sends an email directly via SMTP using the user's saved mailbox credentials.
+    Automatically attaches CV PDF if available, injects RFC Message-ID,
+    and updates application status to 'Applied'.
+    """
+    config = tracker.get_user_mail_config(user_id)
+    sender_email = config.get("email_address", "").strip()
+    app_pwd = config.get("app_password", "").strip()
+
+    if not sender_email or not app_pwd:
+        return {
+            "success": False,
+            "error": "Mailbox credentials not configured. Please set your Email and App Password in Tab 5 (Settings)."
+        }
+
+    if not recipient_email or "@" not in recipient_email:
+        return {
+            "success": False,
+            "error": "Please enter a valid recipient email address."
+        }
+
+    # Detect SMTP server if not explicitly passed
+    host = smtp_host.strip() if smtp_host else ""
+    port = smtp_port
+    if not host or not port:
+        detected_h, detected_p = auto_detect_smtp_server(sender_email)
+        host = host or detected_h
+        port = port or detected_p
+
+    sender_domain = sender_email.split("@")[-1] if "@" in sender_email else "mail.local"
+    message_id = f"<outreach_{app_id or 0}_{int(datetime.now().timestamp())}_{os.urandom(4).hex()}@{sender_domain}>"
+
+    msg = EmailMessage()
+    msg["From"] = sender_email
+    msg["To"] = recipient_email
+    msg["Subject"] = subject
+    msg["Message-ID"] = message_id
+    msg["Date"] = email.utils.formatdate(localtime=True)
+    msg.set_content(body_text)
+
+    # Attach CV PDF if available
+    attached_cv = False
+    if cv_path and os.path.isfile(cv_path):
+        try:
+            with open(cv_path, "rb") as f:
+                pdf_bytes = f.read()
+            cv_filename = os.path.basename(cv_path)
+            clean_cv_filename = re.sub(r'^\d+_', '', cv_filename)
+            msg.add_attachment(pdf_bytes, maintype="application", subtype="pdf", filename=clean_cv_filename)
+            attached_cv = True
+        except Exception:
+            pass
+
+    try:
+        if port == 465:
+            with smtplib.SMTP_SSL(host, port, timeout=20) as server:
+                server.login(sender_email, app_pwd)
+                server.send_message(msg)
+        else:
+            with smtplib.SMTP(host, port, timeout=20) as server:
+                server.starttls()
+                server.login(sender_email, app_pwd)
+                server.send_message(msg)
+
+        # Record in database as SENT
+        if app_id:
+            tracker.save_sent_message(
+                app_id=app_id,
+                user_id=user_id,
+                message_id=message_id,
+                subject=subject,
+                recipient_email=recipient_email,
+                body_text=body_text,
+                sender_email=sender_email
+            )
+            tracker.update_application_status(
+                app_id=app_id,
+                new_status="Applied",
+                notes="Sent directly via SMTP."
+            )
+
+        return {
+            "success": True,
+            "message_id": message_id,
+            "attached_cv": attached_cv,
+            "message": "Email sent successfully via SMTP!"
+        }
+    except smtplib.SMTPAuthenticationError:
+        return {
+            "success": False,
+            "error": "Authentication failed. Please verify your email address and App Password in Tab 5."
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Failed to send email via SMTP ({host}:{port}): {str(e)}"
+        }

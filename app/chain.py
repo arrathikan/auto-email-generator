@@ -18,27 +18,31 @@ SUPPORTED_MODELS = [
 
 class Chain:
     def __init__(self, model_name: str = "openai/gpt-oss-120b", api_key: str | None = None, temperature: float = 0.2):
-        resolved_key = api_key or os.getenv("API_KEY") or os.getenv("GROQ_API_KEY")
-        if not resolved_key:
-            resolved_key = "dummy_key"
-        
-        self.model_name = model_name if model_name in SUPPORTED_MODELS or "/" in model_name else "openai/gpt-oss-120b"
+        resolved_key = (api_key or os.getenv("API_KEY") or os.getenv("GROQ_API_KEY") or "").strip()
         self.api_key = resolved_key
+        self.model_name = model_name if model_name in SUPPORTED_MODELS or "/" in model_name else "openai/gpt-oss-120b"
         self.temperature = temperature
         self._init_llm()
 
+    @property
+    def has_valid_key(self) -> bool:
+        return bool(self.api_key and self.api_key != "dummy_key" and len(self.api_key.strip()) > 10)
+
     def _init_llm(self):
-        self.llm = ChatGroq(
-            model=self.model_name,
-            api_key=self.api_key,
-            temperature=self.temperature
-        )
+        if self.has_valid_key:
+            self.llm = ChatGroq(
+                model=self.model_name,
+                api_key=self.api_key,
+                temperature=self.temperature
+            )
+        else:
+            self.llm = None
 
     def update_config(self, model_name: str | None = None, api_key: str | None = None, temperature: float | None = None):
         if model_name:
             self.model_name = model_name
-        if api_key:
-            self.api_key = api_key
+        if api_key is not None:
+            self.api_key = api_key.strip()
         if temperature is not None:
             self.temperature = temperature
         self._init_llm()
@@ -136,6 +140,62 @@ Return ONLY valid JSON.
             return [
                 {"Techstack": "Python, Machine Learning, Data Science", "Links": "https://github.com/profile"}
             ]
+
+    def parse_candidate_profile_from_cv(self, raw_cv_text: str) -> dict:
+        """
+        Extracts candidate personal details (name, target position, college, degree, candidate type)
+        and portfolio items directly from the uploaded CV text using LLM.
+        """
+        if not self.has_valid_key or self.llm is None:
+            lines = [line.strip() for line in raw_cv_text.splitlines() if line.strip()]
+            name = lines[0] if lines else "Candidate"
+            return {
+                "full_name": name,
+                "position": "Software Engineer",
+                "college": "",
+                "degree": "",
+                "candidate_type": "Experienced Professional",
+                "portfolio": [{"Techstack": "Software Development, Python, Web", "Links": "https://github.com"}]
+            }
+
+        prompt_profile = PromptTemplate.from_template(
+            """### CANDIDATE CV / RESUME CONTENT:
+{cv_text}
+
+### INSTRUCTION:
+Extract the candidate's structured profile information and technical portfolio.
+Return a valid JSON object with the following keys:
+- `full_name`: Candidate's full name.
+- `position`: Their current title or target job title (e.g. "Full Stack Developer", "Data Scientist", "Software Engineer").
+- `college`: University, College, or Institution attended (or "" if not found).
+- `degree`: Major / Degree field of study (e.g. "B.Sc. in Computer Science" or "" if not found).
+- `candidate_type`: Choose ONE of: ["Student / Recent Graduate", "Experienced Professional", "Freelancer / Consultant"].
+- `portfolio`: An array of objects with keys `Techstack` (comma-separated tech skills) and `Links` (URLs or GitHub links mentioned, or "https://github.com/candidate/project-name").
+
+Return ONLY valid JSON.
+
+### VALID JSON:"""
+        )
+
+        try:
+            chain_profile = prompt_profile | self.llm
+            res = chain_profile.invoke({"cv_text": raw_cv_text[:4000]})
+            json_parser = JsonOutputParser()
+            parsed = json_parser.parse(res.content)
+            if isinstance(parsed, dict) and "full_name" in parsed:
+                return parsed
+        except Exception:
+            pass
+
+        return {
+            "full_name": "Candidate",
+            "position": "Software Engineer",
+            "college": "",
+            "degree": "",
+            "candidate_type": "Student / Recent Graduate",
+            "portfolio": []
+        }
+
 
     def write_mail(
         self,
@@ -297,10 +357,20 @@ Return ONLY valid JSON.
             "strategic_advice": f"Emphasize your hands-on project portfolio in {user_position} and your ability to rapidly ramp up on any specialized internal tools."
         }
 
-    def write_followup_mail(self, job: dict, user_name: str, days_since: int = 4):
+    def write_followup_mail(self, job: dict | None = None, user_name: str = "Candidate", days_since: int = 4, original_subject: str = "", original_body: str = "", company: str = "", role: str = "") -> dict:
         """
         Generates a concise, polite follow-up email for an existing application.
         """
+        job_data = job or {}
+        role_name = role or job_data.get("role", "the role")
+        company_name = company or job_data.get("company", "your team")
+
+        if not self.has_valid_key or self.llm is None:
+            return {
+                "subject": f"Following up: {original_subject or f'Application for {role_name} at {company_name}'}",
+                "body": f"Hi {company_name} Hiring Team,\n\nI hope you're having a great week! I wanted to briefly follow up on my application for the {role_name} position. I remain very enthusiastic about the opportunity and would love to provide any additional details if needed.\n\nThank you for your time and consideration.\n\nBest regards,\n{user_name}"
+            }
+
         prompt_followup = PromptTemplate.from_template(
             """### JOB DETAILS:
 Role: {role}
@@ -322,15 +392,14 @@ Return a valid JSON object with:
 ### JSON:"""
         )
 
-        chain_follow = prompt_followup | self.llm
-        res = chain_follow.invoke({
-            "role": job.get("role", "the role"),
-            "company": job.get("company", "your team"),
-            "user_name": user_name,
-            "days_since": days_since
-        })
-
         try:
+            chain_follow = prompt_followup | self.llm
+            res = chain_follow.invoke({
+                "role": role_name,
+                "company": company_name,
+                "user_name": user_name,
+                "days_since": days_since
+            })
             json_parser = JsonOutputParser()
             parsed = json_parser.parse(res.content)
             if isinstance(parsed, dict) and "body" in parsed:
@@ -339,8 +408,8 @@ Return a valid JSON object with:
             pass
 
         return {
-            "subject": f"Following up: {job.get('role', 'Application')} - {user_name}",
-            "body": f"Hi Hiring Team,\n\nI hope you're having a great week! I'm following up on my application for the {job.get('role', 'open')} role at {job.get('company', 'your company')} that I sent a few days ago.\n\nI remains very excited about the mission and would love the opportunity to briefly connect.\n\nBest regards,\n{user_name}"
+            "subject": f"Following up: {original_subject or f'Application for {role_name} - {user_name}'}",
+            "body": f"Hi {company_name} Team,\n\nI hope you're having a great week! I'm following up on my application for the {role_name} role at {company_name} that I sent a few days ago.\n\nI remain very excited about the mission and would love the opportunity to briefly connect.\n\nBest regards,\n{user_name}"
         }
 
     def analyze_reply(self, reply_text: str, original_job_context: dict | None = None) -> dict:

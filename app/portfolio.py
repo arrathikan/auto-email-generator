@@ -3,11 +3,13 @@ import pandas as pd
 import uuid
 import chromadb
 
+DEFAULT_VECTORSTORE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "data", "vectorstore"))
+
 class Portfolio:
     """
     Manages vector storage and semantic retrieval for candidate portfolio items and project links.
     """
-    def __init__(self, file_path=None, collection_name="user_portfolio", data=None, persist_directory="vectorstore"):
+    def __init__(self, file_path=None, collection_name="user_portfolio", data=None, persist_directory=None):
         if data is not None:
             if isinstance(data, pd.DataFrame):
                 self.data = data.copy()
@@ -24,7 +26,12 @@ class Portfolio:
         else:
             self.data = pd.DataFrame(columns=["Techstack", "Links"])
             
-        self.persist_directory = persist_directory
+        if not persist_directory or persist_directory == "vectorstore":
+            self.persist_directory = DEFAULT_VECTORSTORE_DIR
+        else:
+            self.persist_directory = persist_directory if os.path.isabs(persist_directory) else os.path.abspath(os.path.join(os.path.dirname(__file__), persist_directory))
+            
+        os.makedirs(self.persist_directory, exist_ok=True)
         self.collection_name = collection_name
         self.client = chromadb.PersistentClient(path=self.persist_directory)
         self.collection = self.client.get_or_create_collection(name=self.collection_name)
