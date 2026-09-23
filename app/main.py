@@ -1,12 +1,13 @@
-import streamlit as st
-import pandas as pd
-import re
-import sys
 import os
-import urllib.parse
-from datetime import datetime
+import sys
+import re
+import json
+import base64
+import smtplib
+from email.message import EmailMessage
+import pandas as pd
+import streamlit as st
 from pypdf import PdfReader
-
 try:
     import docx
 except ImportError:
@@ -16,533 +17,593 @@ from langchain_community.document_loaders import WebBaseLoader
 from chain import Chain
 from portfolio import Portfolio
 import tracker
-import email_sync
+import mailer
 
 sys.path.append(os.path.dirname(__file__))
 
 # ---------------------------------------------------------
-# Page Configuration & UI Styles
+# Page Configuration & Clean Career-Tech Theme
 # ---------------------------------------------------------
 st.set_page_config(
+    page_title="CareerLens — Job Fit & Application Studio",
+    page_icon="💼",
     layout="wide",
-    page_title="OutreachAI Studio | Intelligent Cold Outreach & Application Intelligence",
-    page_icon="⚡",
     initial_sidebar_state="expanded"
 )
 
 CUSTOM_CSS = """
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Outfit:wght@500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
 html, body, [class*="css"] {
-    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    letter-spacing: -0.01em;
 }
 
-/* Background & Ambient Glow */
+h1, h2, h3, .career-title, .card-title {
+    font-family: 'Outfit', 'Plus Jakarta Sans', sans-serif !important;
+}
+
+/* Neutral Deep Slate Canvas */
 .stApp {
-    background: radial-gradient(circle at 10% 10%, rgba(99, 102, 241, 0.08) 0%, transparent 40%),
-                radial-gradient(circle at 90% 80%, rgba(236, 72, 153, 0.06) 0%, transparent 40%),
-                #0b0f19;
+    background-color: #0b0f19;
+    background-image: 
+        radial-gradient(at 15% 15%, rgba(79, 70, 229, 0.07) 0px, transparent 50%),
+        radial-gradient(at 85% 85%, rgba(14, 165, 233, 0.05) 0px, transparent 50%);
     color: #e2e8f0;
 }
 
-/* Hero Banner */
-.hero-container {
-    background: linear-gradient(135deg, rgba(30, 41, 59, 0.7) 0%, rgba(15, 23, 42, 0.9) 100%);
+/* Smooth Micro-Animations (150-250ms) */
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulseDot {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.6; transform: scale(0.9); }
+}
+
+.animate-fade-in {
+    animation: fadeIn 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Career Platform Cards */
+.career-card {
+    background: #111827;
     border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 20px;
-    padding: 2rem 2.5rem;
-    margin-bottom: 1.5rem;
-    backdrop-filter: blur(12px);
-    box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.5), inset 0 1px 1px rgba(255, 255, 255, 0.1);
-    position: relative;
-    overflow: hidden;
+    border-radius: 16px;
+    padding: 1.5rem 1.75rem;
+    margin-bottom: 1.25rem;
+    box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.35);
+    transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+    animation: fadeIn 0.25s ease-out;
 }
 
-.hero-container::before {
-    content: '';
-    position: absolute;
-    top: 0; left: 0; right: 0; height: 3px;
-    background: linear-gradient(90deg, #6366f1, #8b5cf6, #ec4899, #06b6d4);
+.career-card:hover {
+    border-color: rgba(99, 102, 241, 0.3);
+    box-shadow: 0 8px 25px -4px rgba(0, 0, 0, 0.45);
 }
 
-.hero-title {
-    font-size: 2.2rem;
-    font-weight: 800;
-    letter-spacing: -0.03em;
-    background: linear-gradient(135deg, #ffffff 0%, #cbd5e1 50%, #94a3b8 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    margin-bottom: 0.4rem;
-}
-
-.hero-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-    background: rgba(99, 102, 241, 0.15);
-    border: 1px solid rgba(99, 102, 241, 0.4);
-    color: #a5b4fc;
-    font-size: 0.75rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    padding: 0.35rem 0.85rem;
-    border-radius: 9999px;
-    margin-bottom: 0.6rem;
-}
-
-.hero-subtitle {
-    color: #94a3b8;
-    font-size: 1rem;
-    max-width: 800px;
-    line-height: 1.5;
-}
-
-/* Auth Portal Container */
-.auth-wrapper {
-    max-width: 480px;
-    margin: 1.5rem auto 3rem auto;
-}
-
-.auth-card {
-    background: rgba(17, 24, 39, 0.8);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 20px;
-    padding: 2.2rem;
-    backdrop-filter: blur(16px);
-    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.6), inset 0 1px 1px rgba(255, 255, 255, 0.1);
-}
-
-.auth-header {
-    text-align: center;
-    margin-bottom: 1.8rem;
-}
-
-.auth-logo {
-    font-size: 2.4rem;
-    margin-bottom: 0.3rem;
-}
-
-.auth-title {
-    font-size: 1.6rem;
-    font-weight: 800;
-    color: #ffffff;
-    letter-spacing: -0.02em;
-}
-
-.auth-subtitle {
-    font-size: 0.88rem;
-    color: #94a3b8;
-    margin-top: 0.3rem;
-}
-
-/* Feature Grid */
-.feature-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-    gap: 1rem;
-    margin-top: 2rem;
-}
-
-.feature-box {
-    background: rgba(15, 23, 42, 0.6);
-    border: 1px solid rgba(255, 255, 255, 0.06);
-    border-radius: 14px;
-    padding: 1.2rem;
-}
-
-.feature-box-title {
+.card-title {
+    font-size: 1.15rem;
     font-weight: 700;
-    font-size: 0.92rem;
-    color: #f1f5f9;
-    margin-bottom: 0.35rem;
+    color: #f8fafc;
+    margin-bottom: 0.85rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
     display: flex;
     align-items: center;
     gap: 0.5rem;
 }
 
-.feature-box-desc {
-    font-size: 0.82rem;
-    color: #94a3b8;
-    line-height: 1.4;
-}
-
-/* Notification Alert Boxes */
-.reply-alert-banner {
-    background: linear-gradient(135deg, rgba(34, 197, 94, 0.15) 0%, rgba(16, 185, 129, 0.25) 100%);
-    border: 1px solid rgba(34, 197, 94, 0.5);
-    border-radius: 14px;
-    padding: 1.1rem 1.5rem;
-    margin-bottom: 1.2rem;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    color: #f0fdf4;
-    box-shadow: 0 10px 25px -5px rgba(34, 197, 94, 0.2);
-}
-
-.followup-alert-banner {
-    background: linear-gradient(135deg, rgba(245, 158, 11, 0.12) 0%, rgba(217, 119, 6, 0.2) 100%);
-    border: 1px solid rgba(245, 158, 11, 0.4);
-    border-radius: 14px;
-    padding: 1rem 1.4rem;
-    margin-bottom: 1.2rem;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    color: #fef3c7;
-}
-
-/* Glass Cards */
-.glass-card {
-    background: rgba(17, 24, 39, 0.65);
-    border: 1px solid rgba(255, 255, 255, 0.07);
-    border-radius: 16px;
-    padding: 1.5rem;
-    margin-bottom: 1.25rem;
-    backdrop-filter: blur(10px);
-    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
-}
-
-.card-header {
-    display: flex;
-    align-items: center;
-    gap: 0.6rem;
-    font-size: 1.15rem;
-    font-weight: 700;
-    color: #f8fafc;
-    margin-bottom: 1rem;
-    padding-bottom: 0.5rem;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-}
-
-/* Status Pills */
-.status-pill {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-    padding: 0.25rem 0.75rem;
-    border-radius: 9999px;
-    font-size: 0.8rem;
-    font-weight: 600;
-}
-.status-pill.success {
-    background: rgba(34, 197, 94, 0.15);
-    color: #4ade80;
-    border: 1px solid rgba(34, 197, 94, 0.3);
-}
-.status-pill.warning {
-    background: rgba(234, 179, 8, 0.15);
-    color: #facc15;
-    border: 1px solid rgba(234, 179, 8, 0.3);
-}
-
-.strength-tag {
-    display: inline-block;
-    background: rgba(34, 197, 94, 0.15);
-    border: 1px solid rgba(34, 197, 94, 0.35);
-    color: #86efac;
-    font-size: 0.82rem;
-    font-weight: 600;
-    padding: 0.3rem 0.7rem;
-    border-radius: 8px;
-    margin: 0.25rem;
-}
-
-.gap-tag {
-    display: inline-block;
-    background: rgba(239, 68, 68, 0.15);
-    border: 1px solid rgba(239, 68, 68, 0.35);
-    color: #fca5a5;
-    font-size: 0.82rem;
-    font-weight: 600;
-    padding: 0.3rem 0.7rem;
-    border-radius: 8px;
-    margin: 0.25rem;
-}
-
-.score-badge {
-    font-size: 2.5rem;
-    font-weight: 800;
-    background: linear-gradient(135deg, #10b981 0%, #06b6d4 100%);
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-}
-
-.advice-box {
-    background: rgba(15, 23, 42, 0.8);
-    border-left: 4px solid #6366f1;
-    border-radius: 10px;
-    padding: 1rem 1.25rem;
-    margin-top: 1rem;
-    font-size: 0.95rem;
-    line-height: 1.6;
-    color: #cbd5e1;
-}
-
-.email-preview-box {
-    background: #0f172a;
-    border: 1px solid rgba(99, 102, 241, 0.3);
-    border-radius: 14px;
-    padding: 1.5rem;
-    line-height: 1.7;
-    color: #e2e8f0;
-    box-shadow: 0 15px 30px -10px rgba(0, 0, 0, 0.5);
-}
-
-/* Timeline & Conversation Flow Components */
-.timeline-card {
-    background: rgba(15, 23, 42, 0.85);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 14px;
-    padding: 1.25rem;
-    margin-bottom: 1rem;
+/* Welcome Hero Box */
+.welcome-banner {
+    background: linear-gradient(135deg, rgba(30, 41, 59, 0.85) 0%, rgba(15, 23, 42, 0.95) 100%);
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    border-radius: 18px;
+    padding: 2rem 2.25rem;
+    margin-bottom: 1.5rem;
     position: relative;
+    overflow: hidden;
 }
 
-.timeline-step {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.4rem;
-    font-size: 0.8rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    padding: 0.25rem 0.65rem;
-    border-radius: 6px;
-    margin-bottom: 0.6rem;
-}
-.timeline-step.sent {
-    background: rgba(99, 102, 241, 0.15);
-    color: #a5b4fc;
-    border: 1px solid rgba(99, 102, 241, 0.4);
-}
-.timeline-step.received {
-    background: rgba(34, 197, 94, 0.15);
-    color: #86efac;
-    border: 1px solid rgba(34, 197, 94, 0.4);
-}
-.timeline-step.analysis {
-    background: rgba(234, 179, 8, 0.15);
-    color: #fde047;
-    border: 1px solid rgba(234, 179, 8, 0.4);
+.welcome-banner::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0; height: 3px;
+    background: linear-gradient(90deg, #4f46e5, #06b6d4, #10b981);
 }
 
-.confidence-badge-high {
-    background: rgba(34, 197, 94, 0.2);
-    color: #4ade80;
-    border: 1px solid rgba(34, 197, 94, 0.5);
-    padding: 0.2rem 0.6rem;
-    border-radius: 9999px;
-    font-size: 0.75rem;
-    font-weight: 700;
-}
-.confidence-badge-medium {
-    background: rgba(234, 179, 8, 0.2);
-    color: #facc15;
-    border: 1px solid rgba(234, 179, 8, 0.5);
-    padding: 0.2rem 0.6rem;
-    border-radius: 9999px;
-    font-size: 0.75rem;
-    font-weight: 700;
-}
-.confidence-badge-low {
-    background: rgba(239, 68, 68, 0.2);
-    color: #f87171;
-    border: 1px solid rgba(239, 68, 68, 0.5);
-    padding: 0.2rem 0.6rem;
-    border-radius: 9999px;
-    font-size: 0.75rem;
-    font-weight: 700;
+.welcome-title {
+    font-size: 1.95rem;
+    font-weight: 800;
+    color: #f8fafc;
+    letter-spacing: -0.03em;
+    margin-bottom: 0.35rem;
 }
 
-.entity-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: 0.75rem;
-    margin-top: 0.8rem;
-}
-.entity-pill {
-    background: rgba(30, 41, 59, 0.8);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 10px;
-    padding: 0.6rem 0.9rem;
-    font-size: 0.85rem;
-}
-.entity-label {
-    font-size: 0.72rem;
-    font-weight: 700;
+.welcome-desc {
     color: #94a3b8;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    margin-bottom: 0.2rem;
+    font-size: 1rem;
+    line-height: 1.55;
+    max-width: 780px;
 }
-.entity-val {
-    font-weight: 600;
+
+/* Real Status Overview Tiles (No Fake Stats) */
+.status-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 1rem;
+    margin-top: 1.25rem;
+}
+
+.status-tile {
+    background: rgba(15, 23, 42, 0.7);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 12px;
+    padding: 1rem 1.15rem;
+    transition: transform 0.2s ease, border-color 0.2s ease;
+}
+
+.status-tile:hover {
+    border-color: rgba(99, 102, 241, 0.35);
+    transform: translateY(-1.5px);
+}
+
+.tile-label {
+    font-size: 0.76rem;
+    font-weight: 700;
+    color: #64748b;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 0.3rem;
+}
+
+.tile-value {
+    font-size: 1.05rem;
+    font-weight: 700;
     color: #f1f5f9;
 }
 
-section[data-testid="stSidebar"] {
-    background-color: #070a12;
-    border-right: 1px solid rgba(255, 255, 255, 0.06);
+.tile-sub {
+    font-size: 0.8rem;
+    color: #94a3b8;
+    margin-top: 0.2rem;
 }
 
-/* Seamless Dark Input Fields Styling */
+/* Workflow Step Indicator */
+.workflow-stepper {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.65rem;
+    margin: 1.25rem 0;
+    padding: 0.85rem 1.15rem;
+    background: rgba(15, 23, 42, 0.6);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 12px;
+    align-items: center;
+}
+
+.step-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.84rem;
+    font-weight: 600;
+    color: #94a3b8;
+}
+
+.step-item.active {
+    color: #818cf8;
+}
+
+.step-item.completed {
+    color: #10b981;
+}
+
+.step-badge {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.72rem;
+    font-weight: 700;
+    background: rgba(255, 255, 255, 0.08);
+    color: #94a3b8;
+}
+
+.step-item.active .step-badge {
+    background: #4f46e5;
+    color: #ffffff;
+}
+
+.step-item.completed .step-badge {
+    background: #10b981;
+    color: #ffffff;
+}
+
+.step-arrow {
+    color: #475569;
+    font-size: 0.8rem;
+}
+
+/* Accessible Skill Chips */
+.skill-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.35rem 0.75rem;
+    border-radius: 8px;
+    font-size: 0.84rem;
+    font-weight: 600;
+    margin: 0.25rem;
+    transition: transform 0.15s ease, background 0.15s ease;
+}
+
+.skill-chip:hover {
+    transform: translateY(-1px);
+}
+
+.skill-chip.matched {
+    background: rgba(16, 185, 129, 0.12);
+    border: 1px solid rgba(16, 185, 129, 0.35);
+    color: #a7f3d0;
+}
+
+.skill-chip.partial {
+    background: rgba(245, 158, 11, 0.12);
+    border: 1px solid rgba(245, 158, 11, 0.35);
+    color: #fde68a;
+}
+
+.skill-chip.gap {
+    background: rgba(100, 116, 139, 0.15);
+    border: 1px solid rgba(100, 116, 139, 0.35);
+    color: #cbd5e1;
+}
+
+/* Match Score Visualization */
+.score-hero-card {
+    background: #0f172a;
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    border-radius: 16px;
+    padding: 1.5rem;
+    text-align: center;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+}
+
+.score-display {
+    font-size: 3.2rem;
+    font-weight: 800;
+    line-height: 1;
+    letter-spacing: -0.04em;
+}
+
+.score-label-badge {
+    display: inline-block;
+    padding: 0.25rem 0.85rem;
+    border-radius: 9999px;
+    font-size: 0.84rem;
+    font-weight: 700;
+    margin-top: 0.5rem;
+}
+
+/* Requirement Audit Comparison Rows */
+.audit-row {
+    background: rgba(15, 23, 42, 0.65);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 10px;
+    padding: 0.85rem 1.15rem;
+    margin-bottom: 0.65rem;
+    transition: border-color 0.15s ease;
+}
+
+.audit-row:hover {
+    border-color: rgba(255, 255, 255, 0.14);
+}
+
+/* Clean Professional Email Composer Window */
+.email-composer-frame {
+    background: #080c16;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 14px;
+    overflow: hidden;
+    margin: 1rem 0 1.5rem 0;
+    box-shadow: 0 16px 36px -8px rgba(0, 0, 0, 0.5);
+}
+
+.composer-toolbar {
+    background: #0f172a;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    padding: 0.65rem 1.25rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.composer-dots {
+    display: flex;
+    gap: 0.4rem;
+}
+
+.composer-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    display: inline-block;
+}
+
+.composer-dot.red { background: #ef4444; }
+.composer-dot.yellow { background: #f59e0b; }
+.composer-dot.green { background: #10b981; }
+
+.composer-headers {
+    background: rgba(15, 23, 42, 0.4);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    padding: 0.85rem 1.35rem;
+}
+
+.composer-row {
+    display: flex;
+    gap: 0.65rem;
+    font-size: 0.88rem;
+    line-height: 1.8;
+}
+
+.composer-field-label {
+    width: 60px;
+    font-weight: 700;
+    color: #64748b;
+    text-transform: uppercase;
+    font-size: 0.74rem;
+}
+
+.composer-field-value {
+    color: #f1f5f9;
+    font-weight: 500;
+}
+
+.composer-body {
+    padding: 1.6rem 1.8rem;
+    font-size: 1rem;
+    line-height: 1.8;
+    color: #f8fafc;
+    white-space: pre-wrap;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+/* Polished Dark Form Controls */
 div[data-baseweb="input"] {
     background-color: #0f172a !important;
-    border: 1px solid rgba(255, 255, 255, 0.18) !important;
+    border: 1px solid rgba(255, 255, 255, 0.16) !important;
     border-radius: 10px !important;
-    overflow: hidden !important;
-    display: flex !important;
-    align-items: center !important;
-    padding-right: 0.5rem !important;
-}
-
-div[data-baseweb="base-input"] {
-    background-color: transparent !important;
-    border: none !important;
-    box-shadow: none !important;
-    flex: 1 !important;
-}
-
-div[data-testid="stTextInput"] input {
-    background-color: transparent !important;
-    border: none !important;
-    box-shadow: none !important;
-    color: #ffffff !important;
-    -webkit-text-fill-color: #ffffff !important;
-    font-size: 0.98rem !important;
-    padding: 0.65rem 0.85rem !important;
-}
-
-div[data-testid="stTextInput"] input::placeholder {
-    color: #64748b !important;
-    -webkit-text-fill-color: #64748b !important;
-}
-
-/* Main Action Buttons Styling (Excluding input icons) */
-div[data-testid="stFormSubmitButton"] > button,
-div[data-testid="stButton"] > button {
-    background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 60%, #4338ca 100%) !important;
-    background-color: #2563eb !important;
-    color: #ffffff !important;
-    -webkit-text-fill-color: #ffffff !important;
-    border: 1px solid #60a5fa !important;
-    border-radius: 12px !important;
-    padding: 0.8rem 1.8rem !important;
-    font-size: 1.05rem !important;
-    font-weight: 800 !important;
-    letter-spacing: 0.02em !important;
-    box-shadow: 0 4px 18px rgba(37, 99, 235, 0.5) !important;
-    cursor: pointer !important;
     transition: all 0.2s ease !important;
-    min-height: 48px !important;
-    display: flex !important;
-    align-items: center !important;
-    justify-content: center !important;
 }
 
-div[data-testid="stFormSubmitButton"] > button *,
-div[data-testid="stButton"] > button * {
+div[data-baseweb="input"]:focus-within {
+    border-color: #6366f1 !important;
+    box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2) !important;
+}
+
+div[data-testid="stTextInput"] input,
+div[data-testid="stTextArea"] textarea {
     color: #ffffff !important;
-    -webkit-text-fill-color: #ffffff !important;
-    font-weight: 800 !important;
-    font-size: 1.05rem !important;
-}
-
-div[data-testid="stFormSubmitButton"] > button:hover,
-div[data-testid="stButton"] > button:hover {
-    background: linear-gradient(135deg, #1d4ed8 0%, #2563eb 50%, #3b82f6 100%) !important;
-    background-color: #1d4ed8 !important;
-    border-color: #93c5fd !important;
-    box-shadow: 0 6px 25px rgba(59, 130, 246, 0.7) !important;
-    transform: translateY(-2px) !important;
-}
-
-/* Password Visibility Toggle Button Reset & Custom Icon States */
-div[data-testid="stTextInput"] button,
-div[data-baseweb="input"] button,
-button[aria-label="Show password text"],
-button[aria-label="Hide password text"] {
-    background: transparent !important;
     background-color: transparent !important;
-    border: none !important;
-    box-shadow: none !important;
-    padding: 0.25rem 0.5rem !important;
-    min-height: unset !important;
-    height: auto !important;
-    width: auto !important;
-    transform: none !important;
-    cursor: pointer !important;
-    display: flex !important;
-    align-items: center !important;
-    justify-content: center !important;
+    font-size: 0.96rem !important;
 }
 
-div[data-testid="stTextInput"] button:hover,
-div[data-baseweb="input"] button:hover {
-    background: transparent !important;
-    background-color: transparent !important;
-    box-shadow: none !important;
-    transform: none !important;
+div.stButton > button {
+    border-radius: 10px !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.01em !important;
+    padding: 0.6rem 1.4rem !important;
+    transition: all 0.18s cubic-bezier(0.16, 1, 0.3, 1) !important;
+    border: 1px solid rgba(255, 255, 255, 0.12) !important;
 }
 
-/* Hide default SVG and render custom icon state */
-button[aria-label="Show password text"] svg,
-button[aria-label="Hide password text"] svg {
-    display: none !important;
+div.stButton > button:hover {
+    transform: translateY(-1.5px) !important;
+    box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35) !important;
 }
 
-/* State 1: Password is NOT visible (Masked dots) -> Show CROSSED-OUT EYE icon */
-button[aria-label="Show password text"]::after {
-    content: '';
-    display: inline-block;
-    width: 22px;
-    height: 22px;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='22' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24'%3E%3C/path%3E%3Cline x1='1' y1='1' x2='23' y2='23'%3E%3C/line%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-position: center;
-    background-size: contain;
-    transition: opacity 0.2s ease;
+div.stButton > button:active {
+    transform: translateY(0) scale(0.99) !important;
 }
 
-button[aria-label="Show password text"]:hover::after {
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='22' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24'%3E%3C/path%3E%3Cline x1='1' y1='1' x2='23' y2='23'%3E%3C/line%3E%3C/svg%3E");
-}
-
-/* State 2: Password IS visible (Plain text) -> Show OPEN EYE icon */
-button[aria-label="Hide password text"]::after {
-    content: '';
-    display: inline-block;
-    width: 22px;
-    height: 22px;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='22' viewBox='0 0 24 24' fill='none' stroke='%2338bdf8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z'%3E%3C/path%3E%3Ccircle cx='12' cy='12' r='3'%3E%3C/circle%3E%3C/svg%3E");
-    background-repeat: no-repeat;
-    background-position: center;
-    background-size: contain;
-    transition: opacity 0.2s ease;
-}
-
-button[aria-label="Hide password text"]:hover::after {
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='22' height='22' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z'%3E%3C/path%3E%3Ccircle cx='12' cy='12' r='3'%3E%3C/circle%3E%3C/svg%3E");
-}
-
-/* Auth Tabs Navigation Styling */
-div[data-testid="stTabs"] button[data-baseweb="tab"] {
-    font-size: 1.05rem !important;
-    font-weight: 700 !important;
-    padding: 0.75rem 1.8rem !important;
-    color: #94a3b8 !important;
-    border-radius: 12px 12px 0 0 !important;
-    background: transparent !important;
-    border-bottom: 2px solid transparent !important;
-}
-
-div[data-testid="stTabs"] button[aria-selected="true"] {
+div.stButton > button[kind="primary"] {
+    background: #4f46e5 !important;
     color: #ffffff !important;
-    background: rgba(99, 102, 241, 0.15) !important;
-    border-bottom: 3px solid #6366f1 !important;
+    border-color: #6366f1 !important;
+    box-shadow: 0 4px 14px rgba(79, 70, 229, 0.35) !important;
+}
+
+div.stButton > button[kind="primary"]:hover {
+    background: #4338ca !important;
+    border-color: #818cf8 !important;
+    box-shadow: 0 6px 20px rgba(79, 70, 229, 0.5) !important;
+}
+
+/* -----------------------------------------
+   Auth Split-Screen System (Login & Register)
+-------------------------------------------- */
+.auth-split-container {
+    max-width: 1180px;
+    margin: 1.5rem auto 2.5rem auto;
+}
+
+.auth-visual-panel {
+    background: linear-gradient(145deg, rgba(17, 24, 39, 0.95) 0%, rgba(11, 15, 25, 0.98) 100%);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 20px;
+    padding: 2.2rem 2rem;
+    box-shadow: 0 12px 36px -8px rgba(0, 0, 0, 0.5);
+    animation: fadeIn 0.25s ease-out;
+}
+
+.auth-workflow-card {
+    background: #0d1322;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 12px;
+    padding: 1rem 1.25rem;
+    margin-bottom: 0.65rem;
+    transition: transform 0.2s ease, border-color 0.2s ease;
+}
+
+.auth-workflow-card:hover {
+    border-color: rgba(99, 102, 241, 0.35);
+    transform: translateY(-1.5px);
+}
+
+.auth-node-meta {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.4rem;
+}
+
+.auth-node-title {
+    font-size: 0.92rem;
+    font-weight: 700;
+    color: #f1f5f9;
+}
+
+.auth-node-badge {
+    font-size: 0.72rem;
+    font-weight: 700;
+    padding: 0.15rem 0.55rem;
+    border-radius: 6px;
+    background: rgba(99, 102, 241, 0.15);
+    color: #a5b4fc;
+    border: 1px solid rgba(99, 102, 241, 0.3);
+}
+
+.auth-connector {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    margin: -0.15rem 0 0.5rem 0;
+}
+
+.auth-connector-line {
+    width: 2px;
+    height: 14px;
+    background: linear-gradient(180deg, #4f46e5 0%, rgba(99, 102, 241, 0.25) 100%);
+}
+
+.auth-form-card {
+    background: #111827;
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    border-radius: 20px;
+    padding: 2.25rem 2.2rem;
+    box-shadow: 0 16px 40px -10px rgba(0, 0, 0, 0.55);
+    animation: fadeIn 0.25s ease-out;
+}
+
+.auth-brand-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.35rem 0.85rem;
+    background: rgba(79, 70, 229, 0.12);
+    border: 1px solid rgba(79, 70, 229, 0.25);
+    border-radius: 9999px;
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: #818cf8;
+    margin-bottom: 0.85rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+.auth-title {
+    font-family: 'Outfit', sans-serif;
+    font-size: 1.85rem;
+    font-weight: 800;
+    color: #f8fafc;
+    letter-spacing: -0.03em;
+    line-height: 1.2;
+    margin-bottom: 0.35rem;
+}
+
+.auth-subtitle {
+    font-size: 0.94rem;
+    color: #94a3b8;
+    margin-bottom: 1.5rem;
+    line-height: 1.5;
+}
+
+.auth-strength-container {
+    margin: 0.35rem 0 0.65rem 0;
+}
+
+.auth-strength-bar {
+    height: 4px;
+    border-radius: 2px;
+    background: rgba(255, 255, 255, 0.08);
+    overflow: hidden;
+    margin-top: 0.35rem;
+}
+
+.auth-strength-fill {
+    height: 100%;
+    transition: width 0.25s ease, background-color 0.25s ease;
+}
+
+.auth-checklist {
+    font-size: 0.8rem;
+    color: #94a3b8;
+    margin: 0.5rem 0 0.85rem 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+.auth-check-item {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    transition: color 0.18s ease;
+}
+
+.auth-check-item.valid {
+    color: #10b981;
+    font-weight: 600;
+}
+
+.auth-switch-link {
+    text-align: center;
+    margin-top: 1.25rem;
+    padding-top: 1rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    color: #94a3b8;
+    font-size: 0.88rem;
+}
+
+@media (max-width: 880px) {
+    .auth-visual-panel {
+        padding: 1.25rem;
+        margin-bottom: 1.25rem;
+    }
+    .auth-form-card {
+        padding: 1.5rem 1.25rem;
+    }
+}
+
+/* Sidebar styling */
+section[data-testid="stSidebar"] {
+    background-color: #070a13;
+    border-right: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+/* Respect user accessibility motion settings */
+@media (prefers-reduced-motion: reduce) {
+    * {
+        animation: none !important;
+        transition: none !important;
+    }
 }
 
 #MainMenu {visibility: hidden;}
@@ -607,6 +668,16 @@ def process_cv_to_dataframe(uploaded_file, chain: Chain) -> pd.DataFrame:
     structured_data = chain.extract_portfolio_data(raw_text)
     return pd.DataFrame(structured_data)
 
+def get_candidate_cv_text() -> str:
+    cv_path = st.session_state.get("cv_file_path")
+    if cv_path and os.path.isfile(cv_path):
+        try:
+            with open(cv_path, "rb") as f_cv:
+                return extract_text_from_file(f_cv)
+        except Exception:
+            return ""
+    return ""
+
 def open_in_apple_mail(recipient_email: str, subject: str, body: str, attachment_path: str | None = None, sender_email: str | None = None) -> tuple[bool, str]:
     import subprocess
     try:
@@ -632,9 +703,9 @@ def open_in_apple_mail(recipient_email: str, subject: str, body: str, attachment
         
         res = subprocess.run(['osascript', '-e', script], capture_output=True, text=True)
         if res.returncode == 0:
-            return True, "Opened Apple Mail with your CV attached!"
+            return True, "Opened Apple Mail with pre-filled draft & CV attached!"
         else:
-            return False, res.stderr.strip() or "Failed to execute AppleScript."
+            return False, res.stderr.strip() or "Failed to open Apple Mail."
     except Exception as e:
         return False, str(e)
 
@@ -658,100 +729,281 @@ def build_eml_message(recipient_email: str, subject: str, body: str, cv_bytes: b
         
     return msg.as_bytes()
 
+def get_installed_mail_clients() -> list[dict]:
+    clients = []
+    if sys.platform == "darwin":
+        mac_apps = [
+            ("apple_mail", "Apple Mail", "/System/Applications/Mail.app", "🍎"),
+            ("outlook", "Microsoft Outlook", "/Applications/Microsoft Outlook.app", "🔷"),
+            ("thunderbird", "Mozilla Thunderbird", "/Applications/Thunderbird.app", "🦅"),
+            ("spark", "Spark Desktop", "/Applications/Spark Desktop.app", "⚡")
+        ]
+        for cid, label, path, icon in mac_apps:
+            if os.path.exists(path):
+                clients.append({"id": cid, "label": f"{icon} {label}", "name": label, "icon": icon, "path": path})
+    elif sys.platform == "win32":
+        win_apps = [
+            ("outlook", "Microsoft Outlook", os.path.expandvars(r"%ProgramFiles%\Microsoft Office\root\Office16\OUTLOOK.EXE"), "🔷"),
+            ("thunderbird", "Mozilla Thunderbird", os.path.expandvars(r"%ProgramFiles%\Mozilla Thunderbird\thunderbird.exe"), "🦅"),
+        ]
+        for cid, label, path, icon in win_apps:
+            if os.path.exists(path):
+                clients.append({"id": cid, "label": f"{icon} {label}", "name": label, "icon": icon, "path": path})
+
+    clients.append({"id": "default", "label": "💻 System Default Mail Client", "name": "Default Mail Reader", "icon": "💻", "path": None})
+    return clients
+
+def open_in_selected_mail_client(client_id: str, recipient_email: str, subject: str, body: str, attachment_path: str | None = None, sender_email: str | None = None) -> tuple[bool, str]:
+    import subprocess
+    import tempfile
+    
+    if client_id == "apple_mail":
+        return open_in_apple_mail(recipient_email, subject, body, attachment_path, sender_email)
+    
+    try:
+        cv_bytes = None
+        cv_name = None
+        if attachment_path and os.path.exists(attachment_path):
+            with open(attachment_path, "rb") as f:
+                cv_bytes = f.read()
+            cv_name = os.path.basename(attachment_path)
+            
+        eml_content = build_eml_message(recipient_email, subject, body, cv_bytes, cv_name, sender_email)
+        temp_eml = tempfile.NamedTemporaryFile(delete=False, suffix=".eml")
+        temp_eml.write(eml_content)
+        temp_eml.close()
+        
+        if sys.platform == "darwin":
+            if client_id == "outlook" and os.path.exists("/Applications/Microsoft Outlook.app"):
+                subprocess.Popen(["open", "-a", "Microsoft Outlook", temp_eml.name])
+                return True, "Opened Microsoft Outlook with draft & CV attached!"
+            elif client_id == "thunderbird" and os.path.exists("/Applications/Thunderbird.app"):
+                subprocess.Popen(["open", "-a", "Thunderbird", temp_eml.name])
+                return True, "Opened Mozilla Thunderbird with draft & CV attached!"
+            else:
+                subprocess.Popen(["open", temp_eml.name])
+                return True, "Opened in your default email client with draft & CV attached!"
+        elif sys.platform == "win32":
+            os.startfile(temp_eml.name)
+            return True, "Opened in your Windows mail client with draft & CV attached!"
+        else:
+            subprocess.Popen(["xdg-open", temp_eml.name])
+            return True, "Opened in your default desktop email client!"
+    except Exception as e:
+        return False, str(e)
+
 # ---------------------------------------------------------
 # User Authentication Screen (Rendered if not signed in)
 # ---------------------------------------------------------
 if "current_user" not in st.session_state or st.session_state.current_user is None:
-    st.markdown("""
-    <div class="hero-container" style="text-align: center; padding: 1.8rem 2rem 1.5rem 2rem; margin-bottom: 1.2rem;">
-        <div class="hero-badge">👋 Welcome</div>
-        <div class="hero-title" style="margin-bottom: 0;">Welcome to OutreachAI</div>
-    </div>
-    """, unsafe_allow_html=True)
+    if "auth_mode" not in st.session_state:
+        st.session_state.auth_mode = "signin"
 
-    col_center, _ = st.columns([1, 0.001])
-    with col_center:
-        auth_tab_signin, auth_tab_signup = st.tabs(["🔑 Sign In", "✨ Create Account"])
+    st.markdown('<div class="auth-split-container">', unsafe_allow_html=True)
+    col_visual, col_form = st.columns([1.18, 1.0], gap="large")
 
-        with auth_tab_signin:
-            st.markdown('<div class="glass-card" style="max-width: 520px; margin: 1rem auto;">', unsafe_allow_html=True)
-            st.markdown('<div class="card-header">🔑 Sign In to Your Workspace</div>', unsafe_allow_html=True)
-            
+    with col_visual:
+        auth_img_path = os.path.join(os.path.dirname(__file__), "assets", "career_auth_visual.jpg")
+        if os.path.exists(auth_img_path):
+            st.image(
+                auth_img_path,
+                use_container_width=True,
+                caption="CareerLens • Resume Verification ➔ Job Match Radar ➔ Tailored Application Email"
+            )
+        else:
+            st.markdown("""
+            <div class="welcome-banner" style="padding: 2.5rem 2rem;">
+                <div class="welcome-title">CareerLens Platform</div>
+                <div class="welcome-desc">
+                    Compare your verified profile with real job descriptions, discover genuine skill gaps, and create persuasive application emails.
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+    with col_form:
+        st.markdown('<div class="auth-form-card">', unsafe_allow_html=True)
+        
+        # Product Brand Header
+        st.markdown("""
+        <div style="display: flex; align-items: center; gap: 0.65rem; margin-bottom: 0.75rem;">
+            <div style="width: 34px; height: 34px; background: linear-gradient(135deg, #4f46e5 0%, #3b82f6 100%); border-radius: 9px; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 1.05rem; color: white;">
+                CL
+            </div>
+            <div style="font-family: 'Outfit', sans-serif; font-size: 1.3rem; font-weight: 800; color: #f8fafc; letter-spacing: -0.02em;">
+                CareerLens
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        if st.session_state.auth_mode == "signin":
+            st.markdown("""
+            <div class="auth-title">Welcome back</div>
+            <div class="auth-subtitle">Sign in to continue preparing your next application.</div>
+            """, unsafe_allow_html=True)
+
             with st.form("signin_form", clear_on_submit=False):
-                login_username = st.text_input("Username or Email Address:", placeholder="Enter your username or email")
-                login_password = st.text_input("Password:", type="password", placeholder="••••••••")
+                login_username = st.text_input(
+                    "Email or Username",
+                    placeholder="name@example.com",
+                    key="signin_user_input"
+                )
+                
+                show_login_pwd = st.checkbox("Show password", key="chk_show_login_pwd")
+                login_password = st.text_input(
+                    "Password",
+                    type="default" if show_login_pwd else "password",
+                    placeholder="Enter your password",
+                    key="signin_pwd_input"
+                )
+
+                st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
                 submit_signin = st.form_submit_button("Sign In ➔", type="primary", use_container_width=True)
 
                 if submit_signin:
                     if not login_username.strip() or not login_password:
-                        st.error("⚠️ Please enter both username/email and password.")
+                        st.error("Please enter your email or username and password.")
                     else:
-                        success, message, user = tracker.authenticate_user(login_username, login_password)
-                        if success and user:
-                            st.session_state.current_user = user
-                            st.session_state.profile_loaded = False
-                            st.rerun()
-                        else:
-                            st.error(f"❌ {message}")
-            st.markdown('</div>', unsafe_allow_html=True)
+                        with st.spinner("Signing in..."):
+                            success, message, user = tracker.authenticate_user(login_username, login_password)
+                            if success and user:
+                                st.session_state.current_user = user
+                                st.session_state.profile_loaded = False
+                                st.session_state.current_page = "dashboard"
+                                st.toast("Signed in successfully. Welcome back!", icon="👋")
+                                st.rerun()
+                            else:
+                                st.error("We couldn't sign you in with those details. Check your email and password and try again.")
 
-        with auth_tab_signup:
-            st.markdown('<div class="glass-card" style="max-width: 520px; margin: 1rem auto;">', unsafe_allow_html=True)
-            st.markdown('<div class="card-header">✨ Create New Account</div>', unsafe_allow_html=True)
-            
+            st.markdown('<div class="auth-switch-link">New here?</div>', unsafe_allow_html=True)
+            if st.button("Create an account →", key="switch_to_signup_btn", use_container_width=True):
+                st.session_state.auth_mode = "signup"
+                st.rerun()
+
+        else:
+            st.markdown("""
+            <div class="auth-title">Create your account</div>
+            <div class="auth-subtitle">Build your profile and start comparing it with opportunities.</div>
+            """, unsafe_allow_html=True)
+
             with st.form("signup_form", clear_on_submit=False):
-                reg_username = st.text_input("Desired Username:", placeholder="e.g. alexdev")
-                reg_email = st.text_input("Email Address:", placeholder="e.g. alex@gmail.com")
-                reg_password = st.text_input("Create Password (min 6 chars):", type="password", placeholder="••••••••")
-                reg_confirm = st.text_input("Confirm Password:", type="password", placeholder="••••••••")
+                reg_username = st.text_input(
+                    "Full Name or Username",
+                    placeholder="e.g. Alex Rivera",
+                    key="signup_user_input"
+                )
+                reg_email = st.text_input(
+                    "Email Address",
+                    placeholder="e.g. alex@example.com",
+                    key="signup_email_input"
+                )
+
+                show_reg_pwd = st.checkbox("Show password", key="chk_show_reg_pwd")
+                reg_password = st.text_input(
+                    "Password (min 6 characters)",
+                    type="default" if show_reg_pwd else "password",
+                    placeholder="Create a secure password",
+                    key="signup_pwd_input"
+                )
+                reg_confirm = st.text_input(
+                    "Confirm Password",
+                    type="default" if show_reg_pwd else "password",
+                    placeholder="Re-enter your password",
+                    key="signup_confirm_input"
+                )
+
+                # Real backend requirements checklist & strength feedback
+                pwd_val = reg_password or ""
+                has_len = len(pwd_val) >= 6
+                has_upper = any(c.isupper() for c in pwd_val)
+                has_digit = any(c.isdigit() for c in pwd_val)
+                
+                # Calculate subtle strength
+                score = 0
+                if len(pwd_val) >= 6: score += 1
+                if len(pwd_val) >= 8: score += 1
+                if has_upper: score += 1
+                if has_digit: score += 1
+                
+                if score <= 1:
+                    strength_label, strength_color, strength_pct = "Basic", "#ef4444", 25
+                elif score <= 2:
+                    strength_label, strength_color, strength_pct = "Moderate", "#f59e0b", 60
+                else:
+                    strength_label, strength_color, strength_pct = "Strong", "#10b981", 100
+
+                if pwd_val:
+                    st.markdown(f"""
+                    <div class="auth-strength-container">
+                        <div style="display: flex; justify-content: space-between; font-size: 0.74rem; color: #94a3b8; font-weight: 600;">
+                            <span>Password Strength</span>
+                            <span style="color: {strength_color};">{strength_label}</span>
+                        </div>
+                        <div class="auth-strength-bar">
+                            <div class="auth-strength-fill" style="width: {strength_pct}%; background-color: {strength_color};"></div>
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                st.markdown(f"""
+                <div class="auth-checklist">
+                    <div class="auth-check-item {'valid' if has_len else ''}">
+                        {'✓' if has_len else '○'} At least 6 characters
+                    </div>
+                    <div class="auth-check-item {'valid' if has_upper else ''}">
+                        {'✓' if has_upper else '○'} Uppercase letter (recommended)
+                    </div>
+                    <div class="auth-check-item {'valid' if has_digit else ''}">
+                        {'✓' if has_digit else '○'} Number (recommended)
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                st.markdown("<div style='height: 4px;'></div>", unsafe_allow_html=True)
                 submit_signup = st.form_submit_button("Create Account ➔", type="primary", use_container_width=True)
 
                 if submit_signup:
-                    if not reg_username.strip() or not reg_email.strip() or not reg_password:
-                        st.error("⚠️ Please fill in all required fields.")
-                    elif reg_password != reg_confirm:
-                        st.error("⚠️ Passwords do not match. Please re-enter.")
-                    else:
-                        success, message, user = tracker.register_user(reg_username, reg_email, reg_password)
-                        if success and user:
-                            st.session_state.current_user = user
-                            st.session_state.profile_loaded = False
-                            st.success("🎉 Account created successfully! Loading your workspace...")
-                            st.rerun()
-                        else:
-                            st.error(f"❌ {message}")
-            st.markdown('</div>', unsafe_allow_html=True)
+                    u_clean = reg_username.strip()
+                    e_clean = reg_email.strip().lower()
+                    p_clean = reg_password
 
-    # Informational Feature Highlights
-    st.markdown("""
-    <div class="feature-grid">
-        <div class="feature-box">
-            <div class="feature-box-title">📊 Job Fit & Skill Gap Diagnosis</div>
-            <div class="feature-box-desc">Evaluates your CV against target job requirements in real-time, calculating a match percentage and missing keywords.</div>
-        </div>
-        <div class="feature-box">
-            <div class="feature-box-title">✉️ High-Converting Cold Outreach</div>
-            <div class="feature-box-desc">Generates persuasive, personalized cold emails with custom subject lines and relevant portfolio project links.</div>
-        </div>
-        <div class="feature-box">
-            <div class="feature-box-title">📎 1-Click Apple Mail Automation</div>
-            <div class="feature-box-desc">Launches macOS Apple Mail with recipient, subject, custom body, and your uploaded CV automatically attached.</div>
-        </div>
-        <div class="feature-box">
-            <div class="feature-box-title">🗂️ Persistent Application Pipeline</div>
-            <div class="feature-box-desc">Tracks your outreach stages, recruiter notes, and alerts you automatically when responses or follow-ups are due.</div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+                    if not u_clean or not e_clean or not p_clean:
+                        st.error("Please fill in all required fields.")
+                    elif len(u_clean) < 3:
+                        st.error("Username or name must be at least 3 characters long.")
+                    elif "@" not in e_clean or "." not in e_clean:
+                        st.error("Please provide a valid email address.")
+                    elif len(p_clean) < 6:
+                        st.error("Password must be at least 6 characters long.")
+                    elif p_clean != reg_confirm:
+                        st.error("Passwords do not match yet. Please verify and try again.")
+                    else:
+                        with st.spinner("Creating account..."):
+                            success, message, user = tracker.register_user(u_clean, e_clean, p_clean)
+                            if success and user:
+                                st.session_state.current_user = user
+                                st.session_state.profile_loaded = False
+                                st.session_state.current_page = "profile"  # Seamless onboarding bridge!
+                                st.toast("Account created! Let's set up your profile and upload your CV.", icon="🎉")
+                                st.rerun()
+                            else:
+                                st.error(message)
+
+            st.markdown('<div class="auth-switch-link">Already have an account?</div>', unsafe_allow_html=True)
+            if st.button("Sign in to your account →", key="switch_to_signin_btn", use_container_width=True):
+                st.session_state.auth_mode = "signin"
+                st.rerun()
+
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    st.markdown('</div>', unsafe_allow_html=True)
     st.stop()
 
 # ---------------------------------------------------------
-# Authenticated User Workspace
+# Authenticated User Workspace Initialization
 # ---------------------------------------------------------
 current_user = st.session_state.current_user
 user_id = current_user["id"]
 
-# Load user profile from database into session state
 if not st.session_state.get("profile_loaded"):
     user_prof = tracker.get_user_profile(user_id)
     st.session_state.user_name = user_prof.get("full_name") or current_user.get("username", "").capitalize()
@@ -770,18 +1022,23 @@ if not st.session_state.get("profile_loaded"):
     st.session_state.cv_file_path = user_prof.get("cv_file_path") or None
     st.session_state.cv_file_bytes = None
     if st.session_state.cv_file_path and os.path.exists(st.session_state.cv_file_path):
-        with open(st.session_state.cv_file_path, "rb") as f:
-            st.session_state.cv_file_bytes = f.read()
+        try:
+            with open(st.session_state.cv_file_path, "rb") as f:
+                st.session_state.cv_file_bytes = f.read()
+        except Exception:
+            pass
 
-    st.session_state.job_input_mode = "Direct Job Description"
+    st.session_state.job_input_mode = "Paste Job Description"
     st.session_state.job_url = ""
     st.session_state.job_text = ""
     st.session_state.recipient_email = ""
     st.session_state.generated_results = None
     st.session_state.fit_analysis_result = None
+    st.session_state.current_page = "dashboard"
     st.session_state.profile_loaded = True
 
 def save_current_user_profile():
+    p_data = st.session_state.portfolio_df.to_dict("records") if st.session_state.portfolio_df is not None and not st.session_state.portfolio_df.empty else []
     tracker.save_user_profile(
         user_id=user_id,
         full_name=st.session_state.user_name,
@@ -790,237 +1047,306 @@ def save_current_user_profile():
         degree=st.session_state.user_study,
         candidate_type=st.session_state.candidate_type,
         custom_notes=st.session_state.custom_notes,
-        portfolio_data=st.session_state.portfolio_df if st.session_state.portfolio_df is not None else [],
+        portfolio=p_data,
         cv_filename=st.session_state.cv_filename or "",
         cv_file_path=st.session_state.cv_file_path or ""
     )
 
+def get_current_job_text() -> tuple[str, str | None]:
+    if st.session_state.job_input_mode == "Paste Job Description":
+        text = st.session_state.get("job_text", "").strip()
+        if not text:
+            return "", "Please paste the job description text first."
+        return text, None
+    else:
+        url = st.session_state.get("job_url", "").strip()
+        if not url:
+            return "", "Please enter a valid job posting URL."
+        try:
+            loader = WebBaseLoader([url])
+            docs = loader.load()
+            if not docs or not docs[0].page_content.strip():
+                return "", "Could not extract text from the provided URL. Please try pasting the job description directly."
+            return clean_text(docs[0].page_content), None
+        except Exception as e:
+            return "", f"Scraping error: {str(e)}. Please paste the job description directly."
+
 # ---------------------------------------------------------
-# Sidebar: User Account & LLM Controls
+# Sidebar Navigation & Settings
 # ---------------------------------------------------------
 with st.sidebar:
-    st.markdown("### 👤 User Account")
-    st.markdown(f"**Signed in as:** `{current_user['username']}`")
-    st.caption(f"📧 {current_user['email']}")
+    st.markdown("""
+    <div style="padding: 0.5rem 0 1rem 0;">
+        <div style="font-size: 1.25rem; font-weight: 800; color: #f8fafc; letter-spacing: -0.02em; display: flex; align-items: center; gap: 0.5rem;">
+            💼 CareerLens
+        </div>
+        <div style="font-size: 0.78rem; color: #94a3b8;">Job Fit & Application Studio</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Candidate Profile Snippet
+    user_initials = "".join([part[0].upper() for part in st.session_state.user_name.split() if part])[:2] or "CA"
+    cv_status_text = f"Attached ({st.session_state.cv_filename})" if st.session_state.cv_filename else "Not uploaded"
+    cv_status_color = "#10b981" if st.session_state.cv_filename else "#f59e0b"
+
+    st.markdown(f"""
+    <div style="background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.07); border-radius: 12px; padding: 0.85rem; margin-bottom: 1.25rem;">
+        <div style="display: flex; align-items: center; gap: 0.65rem;">
+            <div style="width: 36px; height: 36px; border-radius: 8px; background: #4f46e5; color: white; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 0.95rem;">
+                {user_initials}
+            </div>
+            <div style="flex: 1; min-width: 0;">
+                <div style="font-size: 0.92rem; font-weight: 700; color: #f8fafc; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                    {st.session_state.user_name}
+                </div>
+                <div style="font-size: 0.76rem; color: #94a3b8;">
+                    CV: <span style="color: {cv_status_color}; font-weight: 600;">{cv_status_text}</span>
+                </div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("### Navigation")
     
+    # Navigation options mapped to keys
+    nav_map = {
+        "dashboard": "🏠 Dashboard",
+        "profile": "👤 Profile / CV",
+        "analyze": "🎯 Analyze Job",
+        "audit": "📊 Match & Gap Audit",
+        "email": "✉️ Application Email"
+    }
+
+    current_idx = list(nav_map.keys()).index(st.session_state.get("current_page", "dashboard")) if st.session_state.get("current_page") in nav_map else 0
+
+    selected_nav_label = st.radio(
+        "Go to page:",
+        options=list(nav_map.values()),
+        index=current_idx,
+        label_visibility="collapsed"
+    )
+
+    # Synchronize selected navigation page
+    for k, v in nav_map.items():
+        if v == selected_nav_label:
+            st.session_state.current_page = k
+            break
+
+    st.markdown("<hr style='margin: 1.25rem 0; border-color: rgba(255,255,255,0.06);'>", unsafe_allow_html=True)
+
+    # Clean Configuration Expander
+    with st.expander("⚙️ Preferences & Tone", expanded=False):
+        api_key = os.getenv("API_KEY") or os.getenv("GROQ_API_KEY")
+        selected_model = st.selectbox(
+            "Model:",
+            options=[
+                "openai/gpt-oss-120b",
+                "openai/gpt-oss-20b",
+                "qwen/qwen3.8-27b",
+                "groq/compound-mini",
+                "groq/compound",
+                "qwen/qwen3.6-27b"
+            ],
+            index=0,
+            help="Language model used for requirement extraction and outreach drafting."
+        )
+        selected_tone = st.selectbox(
+            "Outreach Tone:",
+            options=[
+                "Professional & Persuasive (Recommended)",
+                "Enthusiastic & Academic",
+                "Casual & Startup-Friendly",
+                "Confident Executive",
+                "Short & Direct / No Fluff"
+            ],
+            index=0
+        )
+        selected_length = st.selectbox(
+            "Email Length:",
+            options=[
+                "Standard (120-180 words)",
+                "Concise & Punchy (under 120 words)",
+                "Comprehensive (200+ words)"
+            ],
+            index=0
+        )
+
+    col_save, col_clear = st.columns(2)
+    with col_save:
+        if st.button("💾 Save", use_container_width=True, help="Saves your current profile and settings"):
+            save_current_user_profile()
+            st.toast("Profile saved successfully.", icon="✅")
+    with col_clear:
+        if st.button("🔄 Reset", use_container_width=True, help="Clears analyzed job and drafts"):
+            for k in ["job_text", "job_url", "recipient_email", "generated_results", "fit_analysis_result"]:
+                if k in st.session_state:
+                    st.session_state[k] = "" if "text" in k or "url" in k or "email" in k else None
+            st.session_state.current_page = "analyze"
+            st.rerun()
+
+    st.markdown("<div style='margin-top: 2rem;'>", unsafe_allow_html=True)
     if st.button("🚪 Sign Out", use_container_width=True):
         st.session_state.current_user = None
         st.session_state.profile_loaded = False
         st.rerun()
-
-    st.markdown("---")
-    st.markdown("### ⚡ AI Status")
-    api_key = os.getenv("API_KEY") or os.getenv("GROQ_API_KEY")
-    if api_key:
-        st.markdown('<span class="status-pill success">● AI Engine Connected</span>', unsafe_allow_html=True)
-    else:
-        st.markdown('<span class="status-pill warning">⚠️ .env API Key Missing</span>', unsafe_allow_html=True)
-
-    st.markdown("---")
-    st.markdown("### 🧠 Model & Tone")
-    
-    selected_model = st.selectbox(
-        "LLM Engine:",
-        options=[
-            "openai/gpt-oss-120b",
-            "openai/gpt-oss-20b",
-            "qwen/qwen3.8-27b",
-            "groq/compound-mini",
-            "groq/compound",
-            "qwen/qwen3.6-27b"
-        ],
-        index=0,
-        help="OpenAI GPT-OSS 120B produces the most persuasive outreach emails."
-    )
-
-    selected_tone = st.selectbox(
-        "Email Tone & Style:",
-        options=[
-            "Professional & Persuasive (Recommended)",
-            "Enthusiastic & Academic",
-            "Casual & Startup-Friendly",
-            "Confident Executive",
-            "Short & Direct / No Fluff"
-        ],
-        index=0
-    )
-
-    selected_length = st.selectbox(
-        "Email Length:",
-        options=[
-            "Standard (180-250 words)",
-            "Concise & Punchy (under 130 words)",
-            "Comprehensive (280+ words)"
-        ],
-        index=0
-    )
-
-    st.markdown("---")
-    st.markdown("### 💾 Profile Memory")
-    col_save, col_clear = st.columns(2)
-    with col_save:
-        if st.button("💾 Save Profile", help="Saves your current profile information permanently"):
-            save_current_user_profile()
-            st.toast("✅ Profile saved to memory!", icon="💾")
-    with col_clear:
-        if st.button("🔄 Reset Inputs", help="Clear form inputs"):
-            for k in ["job_text", "job_url", "recipient_email", "generated_results", "fit_analysis_result"]:
-                if k in st.session_state:
-                    st.session_state[k] = "" if "text" in k or "url" in k or "email" in k else None
-            st.rerun()
-
-    st.markdown("<br><hr>", unsafe_allow_html=True)
-    st.markdown(
-        "<div style='color: #64748b; font-size: 0.78rem; text-align: center;'>"
-        "OutreachAI Studio v5.2<br>Powered by <b>Groq LLMs</b> & <b>ChromaDB</b>"
-        "</div>",
-        unsafe_allow_html=True
-    )
-
-# ---------------------------------------------------------
-# Dynamic Alerts (Recruiter Replies & Follow-Ups for User)
-# ---------------------------------------------------------
-alerts = tracker.get_user_alerts(user_id=user_id)
-replies = alerts.get("replies", [])
-pending_followups = alerts.get("pending_followups", [])
-
-if replies:
-    company_names = ", ".join([f"<b>{r['company']}</b> ({r['status']})" for r in replies[:2]])
-    st.markdown(f"""
-    <div class="reply-alert-banner">
-        <div>
-            🎉 <b>Recruiter Update / Reply Alert:</b> You have <b>{len(replies)}</b> application update(s): {company_names}!
-        </div>
-        <div style="font-size: 0.85rem; font-weight: 700;">Check <b>Tab 5 (Tracker)</b> for recruiter notes & details!</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-if pending_followups:
-    count = len(pending_followups)
-    sample_company = pending_followups[0]["company"]
-    st.markdown(f"""
-    <div class="followup-alert-banner">
-        <div>
-            🔔 <b>Follow-Up Reminder:</b> You have <b>{count}</b> active application(s) awaiting response (e.g. <b>{sample_company}</b> sent {pending_followups[0].get('days_since_applied', 3)}+ days ago).
-        </div>
-        <div style="font-size: 0.85rem; font-weight: 600;">Check <b>Tab 5 (Tracker)</b> to generate 1-click follow-up emails!</div>
-    </div>
-    """, unsafe_allow_html=True)
-
-# ---------------------------------------------------------
-# Main Page Header / Hero
-# ---------------------------------------------------------
-st.markdown("""
-<div class="hero-container">
-    <div class="hero-badge">⚡ AI-Powered Candidate Outreach & Application Tracker</div>
-    <div class="hero-title">High-Converting Cold Email Studio</div>
-    <div class="hero-subtitle">
-        Analyze real-time job fit & skill gaps, generate tailored cold outreach with pre-attached CVs, and manage your entire application pipeline in one place.
-    </div>
-</div>
-""", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
 # Initialize Chain instance
 try:
     chain = Chain(model_name=selected_model, api_key=api_key)
 except Exception as e:
-    st.error(f"⚠️ Error initializing LLM Chain: {e}")
+    st.error(f"Error initializing analysis engine: {e}")
     chain = None
 
-# ---------------------------------------------------------
-# Main Workflow Tabs
-# ---------------------------------------------------------
-tab_profile, tab_job, tab_fit, tab_studio, tab_tracker = st.tabs([
-    "👤 1. Profile & Portfolio",
-    "🎯 2. Target Job",
-    "📊 3. Fit & Gap Analysis",
-    "✉️ 4. Email Studio",
-    "🗂️ 5. Application Tracker"
-])
+# =========================================================
+# VIEW 1: DASHBOARD
+# =========================================================
+if st.session_state.current_page == "dashboard":
+    st.markdown("""
+    <div class="welcome-banner">
+        <div class="welcome-title">See how well your profile fits your next opportunity.</div>
+        <div class="welcome-desc">
+            Compare target job descriptions with your profile, identify critical skill gaps, and generate tailored, credible outreach emails.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
-# ---------------------------------------------------------
-# TAB 1: Profile & Portfolio
-# ---------------------------------------------------------
-with tab_profile:
-    st.markdown('<div class="glass-card">', unsafe_allow_html=True)
-    st.markdown('<div class="card-header">👤 Your Candidate Profile</div>', unsafe_allow_html=True)
-    
+    # Real Status Summary Cards (Strictly genuine data, no fake stats)
+    has_cv = bool(st.session_state.cv_filename)
+    has_skills = st.session_state.portfolio_df is not None and not st.session_state.portfolio_df.empty
+    skills_count = len(st.session_state.portfolio_df) if has_skills else 0
+    has_analysis = st.session_state.fit_analysis_result is not None
+    target_role_text = st.session_state.fit_analysis_result["job"].get("role", "Ready to analyze") if has_analysis else "None yet"
+    target_company_text = st.session_state.fit_analysis_result["job"].get("company", "") if has_analysis else "Paste a job to begin"
+
+    st.markdown(f"""
+    <div class="status-grid">
+        <div class="status-tile">
+            <div class="tile-label">Candidate Profile</div>
+            <div class="tile-value">{st.session_state.user_name}</div>
+            <div class="tile-sub">{st.session_state.user_position or 'Role unassigned'} • {st.session_state.candidate_type}</div>
+        </div>
+        <div class="status-tile">
+            <div class="tile-label">Resume / CV Status</div>
+            <div class="tile-value">{'✓ ' + st.session_state.cv_filename if has_cv else '○ Pending Upload'}</div>
+            <div class="tile-sub">{f'{skills_count} verified projects/skills indexed' if has_skills else 'Upload CV to extract skills'}</div>
+        </div>
+        <div class="status-tile">
+            <div class="tile-label">Active Job Analysis</div>
+            <div class="tile-value">{target_role_text}</div>
+            <div class="tile-sub">{target_company_text}</div>
+        </div>
+        <div class="status-tile">
+            <div class="tile-label">Match Score Status</div>
+            <div class="tile-value">{str(st.session_state.fit_analysis_result['analysis'].get('match_score', 0)) + '%' if has_analysis else 'Not Analyzed'}</div>
+            <div class="tile-sub">{st.session_state.fit_analysis_result['analysis'].get('fit_level', 'Run analysis to view') if has_analysis else 'Compare against a job'}</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # Workflow Road-map Stepper
+    st.markdown("""
+    <div class="workflow-stepper">
+        <div class="step-item completed">
+            <div class="step-badge">1</div>
+            <span>Profile & CV</span>
+        </div>
+        <span class="step-arrow">➔</span>
+        <div class="step-item active">
+            <div class="step-badge">2</div>
+            <span>Job Description</span>
+        </div>
+        <span class="step-arrow">➔</span>
+        <div class="step-item">
+            <div class="step-badge">3</div>
+            <span>Match & Gap Audit</span>
+        </div>
+        <span class="step-arrow">➔</span>
+        <div class="step-item">
+            <div class="step-badge">4</div>
+            <span>Application Email</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Primary Action CTAs
+    col_cta1, col_cta2 = st.columns([1.5, 1])
+    with col_cta1:
+        st.markdown('<div class="career-card">', unsafe_allow_html=True)
+        st.markdown("### Ready to evaluate a role?")
+        st.markdown("Paste any job description to deconstruct its must-have requirements, calculate your weighted fit score, and highlight verified evidence.")
+        if st.button("🎯 Analyze a Target Job ➔", type="primary", use_container_width=True):
+            st.session_state.current_page = "analyze"
+            st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    with col_cta2:
+        st.markdown('<div class="career-card">', unsafe_allow_html=True)
+        st.markdown("### Profile & CV")
+        st.markdown("Ensure your candidate background, projects, and degree are up-to-date so evidence matches accurately.")
+        if st.button("👤 View / Update Profile", use_container_width=True):
+            st.session_state.current_page = "profile"
+            st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
+
+# =========================================================
+# VIEW 2: PROFILE / CV
+# =========================================================
+elif st.session_state.current_page == "profile":
+    st.markdown('<div class="career-card">', unsafe_allow_html=True)
+    st.markdown('<div class="card-title">👤 Candidate Profile & CV Vault</div>', unsafe_allow_html=True)
+
     col_p1, col_p2 = st.columns(2)
     with col_p1:
-        st.session_state.user_name = st.text_input(
-            "Your Full Name *",
-            value=st.session_state.user_name,
-            placeholder="e.g. Arrathikan Sarma",
-            help="Used for email signature and personalized greetings."
-        )
-        st.session_state.user_position = st.text_input(
-            "Current Role / Headline *",
-            value=st.session_state.user_position,
-            placeholder="e.g. AI & Full-Stack Developer",
-            help="Your professional headline or current position."
+        st.session_state.user_name = st.text_input("Full Name *", value=st.session_state.user_name, placeholder="e.g. Jane Doe")
+        st.session_state.user_position = st.text_input("Current / Target Job Title", value=st.session_state.user_position, placeholder="e.g. Software Engineer, Data Scientist")
+        st.session_state.candidate_type = st.selectbox(
+            "Experience Level / Category",
+            options=["Student / Recent Graduate", "Experienced Professional", "Career Switcher", "Freelancer / Consultant"],
+            index=["Student / Recent Graduate", "Experienced Professional", "Career Switcher", "Freelancer / Consultant"].index(st.session_state.candidate_type) if st.session_state.candidate_type in ["Student / Recent Graduate", "Experienced Professional", "Career Switcher", "Freelancer / Consultant"] else 0
         )
     with col_p2:
-        st.session_state.user_college = st.text_input(
-            "University / Company / Institution",
-            value=st.session_state.user_college,
-            placeholder="e.g. University of Moratuwa",
-            help="Where you study or work."
-        )
-        st.session_state.user_study = st.text_input(
-            "Degree / Major / Specialization",
-            value=st.session_state.user_study,
-            placeholder="e.g. BSc (Hons) in Information Technology",
-            help="Your academic field or core specialty."
-        )
+        st.session_state.user_college = st.text_input("University / College", value=st.session_state.user_college, placeholder="e.g. Stanford University")
+        st.session_state.user_study = st.text_input("Degree / Major", value=st.session_state.user_study, placeholder="e.g. B.S. in Computer Science")
+        st.session_state.custom_notes = st.text_input("Key Accomplishments / Focus Areas", value=st.session_state.custom_notes, placeholder="e.g. Distributed backend systems, open-source contributor")
 
-    st.session_state.candidate_type = st.radio(
-        "Candidate Level:",
-        ["Student / Recent Graduate", "Experienced Professional", "Freelancer / Consultant"],
-        horizontal=True,
-        index=["Student / Recent Graduate", "Experienced Professional", "Freelancer / Consultant"].index(st.session_state.candidate_type)
-        if st.session_state.candidate_type in ["Student / Recent Graduate", "Experienced Professional", "Freelancer / Consultant"] else 0
-    )
-    st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown("<hr style='margin: 1.25rem 0; border-color: rgba(255,255,255,0.06);'>", unsafe_allow_html=True)
 
-    # Portfolio / CV Section
-    st.markdown('<div class="glass-card">', unsafe_allow_html=True)
-    st.markdown('<div class="card-header">📂 Portfolio & Experience Knowledge Base</div>', unsafe_allow_html=True)
-    
-    st.caption("Upload your CV (PDF / DOCX / CSV) to automatically extract your tech stack and matching project links.")
-    
-    uploaded_file = st.file_uploader(
-        "Upload Resume / CV or Portfolio CSV:",
-        type=["pdf", "docx", "csv", "txt"],
-        help="We automatically parse your skills and project links to build vector embeddings for semantic matching."
-    )
+    # Polished CV Upload Area
+    st.markdown("#### 📄 Upload Your Resume / CV")
+    st.caption("Upload your CV in PDF or DOCX format. Your verified technical skills and project citations will be extracted automatically.")
 
+    uploaded_file = st.file_uploader("Select CV file", type=["pdf", "docx", "csv"], label_visibility="collapsed")
     if uploaded_file is not None:
-        file_bytes = uploaded_file.getvalue()
-        saved_path = os.path.join(UPLOAD_DIR, f"{user_id}_{uploaded_file.name}")
-        with open(saved_path, "wb") as f:
-            f.write(file_bytes)
+        save_path = os.path.join(UPLOAD_DIR, f"{user_id}_{uploaded_file.name}")
+        with open(save_path, "wb") as f_out:
+            f_out.write(uploaded_file.getbuffer())
 
-        st.session_state.cv_file_bytes = file_bytes
         st.session_state.cv_filename = uploaded_file.name
-        st.session_state.cv_file_path = saved_path
+        st.session_state.cv_file_path = save_path
+        st.session_state.cv_file_bytes = uploaded_file.getvalue()
 
-        with st.spinner("🧠 Analyzing and vectorizing your CV portfolio..."):
+        with st.spinner("Processing CV and indexing your projects..."):
             try:
                 extracted_df = process_cv_to_dataframe(uploaded_file, chain)
                 st.session_state.portfolio_df = extracted_df
                 save_current_user_profile()
-                st.success(f"✅ Successfully extracted {len(extracted_df)} portfolio items from `{uploaded_file.name}` and saved to memory!")
+                st.toast("CV processed and saved to memory.", icon="✅")
             except Exception as e:
-                st.error(f"⚠️ Error parsing file: {e}")
+                st.error(f"Could not parse file: {e}")
 
     if st.session_state.cv_filename:
-        col_cv_bar1, col_cv_bar2 = st.columns([1.5, 1])
-        with col_cv_bar1:
-            st.markdown(f'<span class="status-pill success">📎 Attached CV for Outreach: <b>{st.session_state.cv_filename}</b></span>', unsafe_allow_html=True)
-        with col_cv_bar2:
-            if st.button("🪄 Auto-Fill Profile from CV", key="btn_autofill_profile", help="AI extracts candidate name, position, college, degree, and skills from your CV."):
+        col_cv_stat1, col_cv_stat2 = st.columns([1.6, 1])
+        with col_cv_stat1:
+            st.markdown(f'<div class="status-tile"><div class="tile-label">Active CV File</div><div class="tile-value">📎 {st.session_state.cv_filename}</div><div class="tile-sub">Ready to attach in desktop email clients.</div></div>', unsafe_allow_html=True)
+        with col_cv_stat2:
+            st.markdown("<div style='margin-top: 0.5rem;'>", unsafe_allow_html=True)
+            if st.button("🪄 Auto-Fill Details from CV", use_container_width=True, help="Extracts name, title, degree, and skills from your uploaded file"):
                 if st.session_state.cv_file_path and os.path.isfile(st.session_state.cv_file_path):
-                    with st.spinner("🤖 Reading CV and extracting your details & portfolio..."):
+                    with st.spinner("Extracting profile details..."):
                         with open(st.session_state.cv_file_path, "rb") as f_cv:
                             cv_raw_text = extract_text_from_file(f_cv)
                         if cv_raw_text:
@@ -1038,12 +1364,15 @@ with tab_profile:
                             if p_info.get("portfolio"):
                                 st.session_state.portfolio_df = pd.DataFrame(p_info["portfolio"])
                             save_current_user_profile()
-                            st.balloons()
-                            st.toast("🪄 Profile details and portfolio auto-filled from your CV!", icon="🎉")
+                            st.toast("Profile details updated from CV.", icon="🪄")
                             st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("#### 💼 Verified Technical Skills & Project Links")
+    st.caption("These items provide verified evidence when matching against job postings and tailoring email citations.")
 
     if st.session_state.portfolio_df is not None and not st.session_state.portfolio_df.empty:
-        st.markdown("#### 🔍 Active Portfolio Items & Project Links:")
         edited_df = st.data_editor(
             st.session_state.portfolio_df,
             num_rows="dynamic",
@@ -1052,214 +1381,310 @@ with tab_profile:
         )
         st.session_state.portfolio_df = edited_df
     else:
-        st.info("💡 Upload your CV above to extract your skills and projects.")
-        
-    st.markdown('</div>', unsafe_allow_html=True)
+        st.info("Upload your resume above to automatically index your skills and projects.")
 
-# ---------------------------------------------------------
-# TAB 2: Target Job Opportunity
-# ---------------------------------------------------------
-with tab_job:
-    st.markdown('<div class="glass-card">', unsafe_allow_html=True)
-    st.markdown('<div class="card-header">🎯 Target Job & Recruiter Details</div>', unsafe_allow_html=True)
-
-    col_j1, col_j2 = st.columns([1.5, 1])
-    with col_j1:
-        job_mode = st.radio(
-            "Job Information Source:",
-            ["Direct Job Description / Paste Text (Recommended)", "Scrape Job URL"],
-            index=0 if st.session_state.job_input_mode == "Direct Job Description" else 1,
-            horizontal=True
-        )
-        st.session_state.job_input_mode = "Direct Job Description" if "Direct" in job_mode else "Job URL"
-    with col_j2:
-        st.session_state.recipient_email = st.text_input(
-            "Company / Recruiter Email Address (Optional):",
-            value=st.session_state.recipient_email,
-            placeholder="e.g. careers@company.com or hr@startup.io",
-            help="Pre-fills the 'To:' field in your email client."
-        )
-
-    if st.session_state.job_input_mode == "Job URL":
-        st.session_state.job_url = st.text_input(
-            "Enter Job Posting / Careers URL:",
-            value=st.session_state.job_url,
-            placeholder="e.g. https://careers.company.com/job/senior-python-developer"
-        )
-        st.caption("ℹ️ Note: Some protected corporate portals (like LinkedIn, Workday) may block web scrapers. In that case, switch to 'Direct Job Description' to paste the text directly.")
-    else:
-        st.session_state.job_text = st.text_area(
-            "Paste Job Description / Requirements:",
-            value=st.session_state.job_text,
-            height=200,
-            placeholder="Paste the full job posting, required qualifications, company mission, or recruiter note here..."
-        )
+    if st.button("💾 Save Profile Changes", type="primary"):
+        save_current_user_profile()
+        st.toast("Profile saved successfully.", icon="✅")
 
     st.markdown('</div>', unsafe_allow_html=True)
 
-    st.markdown('<div class="glass-card">', unsafe_allow_html=True)
-    st.markdown('<div class="card-header">✨ Special Instructions & Custom Angles (Optional)</div>', unsafe_allow_html=True)
-    st.session_state.custom_notes = st.text_input(
-        "Add any specific highlights, start date availability, or personal connection:",
-        value=st.session_state.custom_notes,
-        placeholder="e.g. Mention that I built an open-source tool with 500+ GitHub stars; available immediately for remote work."
+# =========================================================
+# VIEW 3: ANALYZE JOB
+# =========================================================
+elif st.session_state.current_page == "analyze":
+    st.markdown('<div class="career-card">', unsafe_allow_html=True)
+    st.markdown('<div class="card-title">🎯 Analyze a Job Description</div>', unsafe_allow_html=True)
+    st.markdown("Paste a job description to extract its core requirements, identify skill alignment, and detect genuine skill gaps.")
+
+    mode_choice = st.radio(
+        "Input Format:",
+        options=["Paste Job Description", "Import from Job URL"],
+        index=0 if st.session_state.job_input_mode == "Paste Job Description" else 1,
+        horizontal=True
     )
-    st.markdown('</div>', unsafe_allow_html=True)
+    st.session_state.job_input_mode = mode_choice
 
-def get_current_job_text():
-    if st.session_state.job_input_mode == "Job URL":
-        if not st.session_state.job_url.strip():
-            return None, "Please provide a valid Job URL in Tab 2."
-        try:
-            loader = WebBaseLoader([st.session_state.job_url.strip()])
-            page_content = loader.load().pop().page_content
-            return clean_text(page_content), None
-        except Exception as e:
-            return None, f"Scraping failed: {e}. Please switch to Direct Job Description."
+    if mode_choice == "Paste Job Description":
+        st.session_state.job_text = st.text_area(
+            "Job Description Text *",
+            value=st.session_state.job_text,
+            height=280,
+            placeholder="Paste the full job posting here (responsibilities, required qualifications, nice-to-haves)..."
+        )
     else:
-        if not st.session_state.job_text.strip():
-            return None, "Please paste the Job Description in Tab 2."
-        return clean_text(st.session_state.job_text), None
+        st.session_state.job_url = st.text_input(
+            "Target Job Posting URL *",
+            value=st.session_state.job_url,
+            placeholder="https://jobs.lever.co/company/role-id or https://boards.greenhouse.io/..."
+        )
 
-# ---------------------------------------------------------
-# TAB 3: Job Fit & Gap Analysis
-# ---------------------------------------------------------
-with tab_fit:
-    st.markdown('<div class="glass-card">', unsafe_allow_html=True)
-    st.markdown('<div class="card-header">📊 Real-Time Candidate-to-Job Fit Report</div>', unsafe_allow_html=True)
-    
-    st.caption("Evaluates your CV portfolio against the job requirements to calculate your match score, strengths, and missing skill gaps.")
-    
-    if st.button("🔍 Run Fit & Gap Analysis", use_container_width=True):
+    col_opt1, col_opt2 = st.columns(2)
+    with col_opt1:
+        target_role_hint = st.text_input("Job Title (Optional — auto-detected if blank):", placeholder="e.g. Backend Software Engineer")
+    with col_opt2:
+        target_comp_hint = st.text_input("Company Name (Optional — auto-detected if blank):", placeholder="e.g. Stripe, OpenAI")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    if st.button("Analyze Job ➔", type="primary", use_container_width=True):
         if not st.session_state.user_name.strip():
-            st.error("⚠️ Please enter your name in the **Profile** tab.")
-        elif st.session_state.portfolio_df is None or st.session_state.portfolio_df.empty:
-            st.error("⚠️ Please upload a CV in the **Profile** tab.")
+            st.error("Please enter your name in the Profile tab first.")
         elif not api_key:
-            st.error("⚠️ Missing Groq API Key in .env.")
+            st.error("Missing API key. Please check your .env configuration.")
         else:
             job_raw_text, err = get_current_job_text()
             if err:
-                st.error(f"⚠️ {err}")
+                st.error(err)
             else:
-                with st.spinner("🤖 Evaluating skill alignment, calculating match percentage, and diagnosing skill gaps..."):
-                    try:
-                        jobs = chain.extract_jobs(job_raw_text)
-                        target_job = jobs[0] if jobs else {"role": "Target Role", "skills": []}
-                        
-                        portfolio_str = ""
+                progress_placeholder = st.empty()
+                progress_placeholder.info("Reading job description...")
+
+                try:
+                    jobs = chain.extract_jobs(job_raw_text)
+                    target_job = jobs[0] if jobs else {"role": target_role_hint or "Target Role", "skills": []}
+                    if target_role_hint:
+                        target_job["role"] = target_role_hint
+                    if target_comp_hint:
+                        target_job["company"] = target_comp_hint
+
+                    progress_placeholder.info("Comparing requirements against your profile and CV evidence...")
+
+                    portfolio_str = ""
+                    if st.session_state.portfolio_df is not None and not st.session_state.portfolio_df.empty:
                         for _, row in st.session_state.portfolio_df.iterrows():
                             portfolio_str += f"- Tech: {row.get('Techstack', '')} | Project: {row.get('Links', '')}\n"
 
-                        analysis = chain.analyze_job_fit(
-                            job=target_job,
-                            portfolio_summary=portfolio_str,
-                            user_name=st.session_state.user_name,
-                            user_position=st.session_state.user_position,
-                            user_study=st.session_state.user_study
-                        )
-                        st.session_state.fit_analysis_result = {
-                            "job": target_job,
-                            "analysis": analysis
-                        }
-                        st.success("🎉 Fit Analysis Complete!")
-                    except Exception as e:
-                        st.error(f"⚠️ Analysis failed: {e}")
+                    cv_text = get_candidate_cv_text()
 
-    if st.session_state.fit_analysis_result:
+                    analysis = chain.analyze_job_fit(
+                        job=target_job,
+                        portfolio_summary=portfolio_str,
+                        user_name=st.session_state.user_name,
+                        user_position=st.session_state.user_position,
+                        user_study=st.session_state.user_study,
+                        candidate_type=st.session_state.candidate_type,
+                        cv_text=cv_text
+                    )
+
+                    st.session_state.fit_analysis_result = {
+                        "job": target_job,
+                        "analysis": analysis
+                    }
+
+                    progress_placeholder.empty()
+                    st.toast("Analysis complete!", icon="✅")
+                    st.session_state.current_page = "audit"
+                    st.rerun()
+
+                except Exception as e:
+                    progress_placeholder.empty()
+                    st.error(f"Analysis could not be completed: {str(e)}. Please check the job description and try again.")
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# =========================================================
+# VIEW 4: MATCH & GAP AUDIT
+# =========================================================
+elif st.session_state.current_page == "audit":
+    if not st.session_state.fit_analysis_result:
+        st.markdown('<div class="career-card" style="text-align: center; padding: 3rem 2rem;">', unsafe_allow_html=True)
+        st.markdown("### No Job Analyzed Yet")
+        st.markdown("Paste a job description to view your verified match score, skill breakdown, and gap analysis.")
+        if st.button("Go to Job Analysis ➔", type="primary"):
+            st.session_state.current_page = "analyze"
+            st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
+    else:
         res = st.session_state.fit_analysis_result["analysis"]
         target_job = st.session_state.fit_analysis_result["job"]
-        score = res.get("match_score", 85)
+        score = res.get("match_score", 75)
         fit_level = res.get("fit_level", "Strong Match")
         strengths = res.get("matched_strengths", [])
         gaps = res.get("skill_gaps", [])
         advice = res.get("strategic_advice", "")
+        evidence_breakdown = res.get("evidence_breakdown", [])
+        noise_filtered = res.get("noise_filtered", [])
+        audit_meta = res.get("audit_meta", {})
 
-        st.markdown("<hr>", unsafe_allow_html=True)
-        col_s1, col_s2 = st.columns([1, 2])
-        with col_s1:
-            st.markdown(f'<div class="score-badge">{score}%</div>', unsafe_allow_html=True)
-            st.markdown(f'<span class="status-pill success">● {fit_level}</span>', unsafe_allow_html=True)
-            st.progress(score / 100.0)
-        with col_s2:
-            st.markdown(f"### Target Role: **{target_job.get('role', 'Target Role')}**")
-            st.markdown(f"Company: **{target_job.get('company', 'Target Company')}**")
+        score_color = "#10b981" if score >= 80 else ("#f59e0b" if score >= 65 else "#64748b")
 
-        st.markdown("<br>", unsafe_allow_html=True)
-        col_g1, col_g2 = st.columns(2)
-        with col_g1:
-            st.markdown("#### ✅ Matched Strengths & Skills")
+        # Top Header Summary
+        st.markdown('<div class="career-card">', unsafe_allow_html=True)
+        col_res1, col_res2 = st.columns([1, 2.2])
+
+        with col_res1:
+            st.markdown(f"""
+            <div class="score-hero-card">
+                <div class="score-display" style="color: {score_color};">{score}%</div>
+                <div class="score-label-badge" style="background: {score_color}1a; color: {score_color}; border: 1px solid {score_color}40;">
+                    {fit_level}
+                </div>
+                <div style="font-size: 0.78rem; color: #64748b; margin-top: 0.5rem;">Weighted Evidence Alignment</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        with col_res2:
+            st.markdown(f"## {target_job.get('role', 'Target Role')}")
+            st.markdown(f"**Company:** {target_job.get('company', 'Target Company')}")
+            domain_val = target_job.get("domain", "Technology")
+            focus_items = target_job.get("key_focus_areas", [])
+            focus_str = " • ".join(focus_items) if focus_items else "Core Engineering"
+            
+            st.markdown(f"""
+            <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 0.5rem;">
+                <span class="skill-chip matched">🏷️ {domain_val}</span>
+                <span class="skill-chip partial">🎯 Focus: {focus_str}</span>
+            </div>
+            """, unsafe_allow_html=True)
+
+            if st.button("✉️ Draft Application Email for this Role ➔", type="primary"):
+                st.session_state.current_page = "email"
+                st.rerun()
+
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        # 3 Distinct Skill Sections
+        st.markdown('<div class="career-card">', unsafe_allow_html=True)
+        col_sk1, col_sk2 = st.columns(2)
+
+        with col_sk1:
+            st.markdown("#### ✓ Matched Skills")
+            st.caption("Requirements verified with concrete evidence in your profile/CV.")
             if strengths:
                 for s in strengths:
-                    st.markdown(f'<span class="strength-tag">✓ {s}</span>', unsafe_allow_html=True)
+                    st.markdown(f'<span class="skill-chip matched">✓ {s}</span>', unsafe_allow_html=True)
             else:
-                st.write("Solid foundational profile.")
-        with col_g2:
-            st.markdown("#### ⚠️ Skill Gaps & Missing Keywords")
+                st.info("Found foundational alignment.")
+
+        with col_sk2:
+            st.markdown("#### ○ Skills to Develop")
+            st.caption("Important requirements not found in your current profile.")
             if gaps:
                 for g in gaps:
-                    st.markdown(f'<span class="gap-tag">! {g}</span>', unsafe_allow_html=True)
+                    st.markdown(f'<span class="skill-chip gap">○ {g}</span>', unsafe_allow_html=True)
             else:
-                st.write("No critical gaps detected!")
+                st.success("No critical gaps identified for this role.")
+
+        # Partial Matches Section
+        partial_items = [e for e in evidence_breakdown if "PARTIAL" in str(e.get("status", "")).upper()]
+        if partial_items:
+            st.markdown("<hr style='margin: 1.25rem 0; border-color: rgba(255,255,255,0.06);'>", unsafe_allow_html=True)
+            st.markdown("#### ◐ Partial Matches & Scope Differences")
+            st.caption("Related foundation found, but lacking specific production scale or depth demanded by this posting.")
+            for p in partial_items:
+                req_title = p.get("requirement", "")
+                expl = p.get("explanation", "")
+                st.markdown(f'<span class="skill-chip partial">◐ {req_title}</span> <span style="font-size: 0.85rem; color: #94a3b8; margin-left: 0.5rem;">— {expl}</span>', unsafe_allow_html=True)
+
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        # Requirement Breakdown Audit Table
+        if evidence_breakdown:
+            st.markdown('<div class="career-card">', unsafe_allow_html=True)
+            st.markdown('<div class="card-title">📋 Requirement Comparison Breakdown</div>', unsafe_allow_html=True)
+            st.caption("Item-by-item verification showing exact evidence extracted from your CV.")
+
+            for ev in evidence_breakdown:
+                req = ev.get("requirement", "")
+                imp = ev.get("importance", "Core requirement")
+                status = str(ev.get("status", "MISSING")).upper()
+                cand_ev = ev.get("candidate_evidence", "")
+                expl = ev.get("explanation", "")
+
+                is_match = "MATCHED" in status and "PARTIAL" not in status
+                is_part = "PARTIAL" in status
+                is_noise = "NOT RELEVANT" in status
+
+                stat_badge = "✓ Matched" if is_match else ("◐ Partial" if is_part else ("— Excluded Noise" if is_noise else "○ Not Found"))
+                badge_class = "matched" if is_match else ("partial" if is_part else "gap")
+
+                st.markdown(f"""
+                <div class="audit-row">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem;">
+                        <span style="font-weight: 700; color: #f8fafc; font-size: 0.94rem;">{req}</span>
+                        <span class="skill-chip {badge_class}" style="margin: 0; padding: 0.2rem 0.6rem; font-size: 0.76rem;">{stat_badge} ({imp})</span>
+                    </div>
+                    <div style="font-size: 0.84rem; color: #94a3b8;">
+                        <b style="color: #cbd5e1;">Profile Evidence:</b> {cand_ev if cand_ev else "No direct evidence found in uploaded resume"}
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        # "Why this match score?" (Mathematical breakdown)
+        if audit_meta:
+            with st.expander("Why this match score?", expanded=False):
+                c_acc = audit_meta.get("critical_accuracy", {})
+                p_acc = audit_meta.get("preferred_accuracy", {})
+                s_acc = audit_meta.get("soft_accuracy", {})
+                formula_str = audit_meta.get("formula", "")
+
+                st.markdown(f"""
+                <div style="padding: 0.5rem 0;">
+                    <p style="font-size: 0.88rem; color: #cbd5e1; line-height: 1.6;">
+                        Your match score is calculated using weighted mathematical scoring based on verified evidence in your profile:
+                    </p>
+                    <ul style="font-size: 0.86rem; color: #94a3b8; line-height: 1.8;">
+                        <li><b>Critical Core Requirements (65% Weight):</b> {c_acc.get('percentage', 0)}% satisfied ({c_acc.get('matched', 0)} of {c_acc.get('total', 0)} verified)</li>
+                        <li><b>Preferred Requirements (25% Weight):</b> {p_acc.get('percentage', 0)}% satisfied ({p_acc.get('matched', 0)} of {p_acc.get('total', 0)} verified)</li>
+                        <li><b>Soft / Collaborative Skills (10% Weight):</b> {s_acc.get('percentage', 0)}% satisfied ({s_acc.get('matched', 0)} of {s_acc.get('total', 0)} verified)</li>
+                    </ul>
+                    <div style="font-family: monospace; font-size: 0.8rem; background: rgba(0,0,0,0.3); padding: 0.5rem 0.85rem; border-radius: 8px; color: #818cf8;">
+                        Audit Calculation: {formula_str} = {score}%
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
 
         if advice:
             st.markdown(f"""
-            <div class="advice-box">
-                <b>💡 Strategic Positioning & Interview Advice:</b><br>
-                {advice}
+            <div class="career-card" style="border-left: 4px solid #4f46e5;">
+                <div style="font-weight: 700; color: #f8fafc; font-size: 0.95rem; margin-bottom: 0.35rem;">💡 Application & Interview Advice</div>
+                <div style="color: #cbd5e1; font-size: 0.9rem; line-height: 1.6;">{advice}</div>
             </div>
             """, unsafe_allow_html=True)
-            
-    st.markdown('</div>', unsafe_allow_html=True)
 
-# ---------------------------------------------------------
-# TAB 4: Email Generation Studio
-# ---------------------------------------------------------
-with tab_studio:
-    col_btn, col_info = st.columns([1, 2])
-    with col_btn:
-        generate_clicked = st.button("🚀 Generate Cold Email", use_container_width=True)
-    with col_info:
-        st.caption("Matches your portfolio against job requirements and drafts personalized outreach with high-converting subject lines.")
+# =========================================================
+# VIEW 5: PERSONALIZED EMAIL COMPOSER
+# =========================================================
+elif st.session_state.current_page == "email":
+    if not st.session_state.fit_analysis_result:
+        st.markdown('<div class="career-card" style="text-align: center; padding: 3rem 2rem;">', unsafe_allow_html=True)
+        st.markdown("### Analyze a Job First")
+        st.markdown("Analyze a target job posting before generating an email so it can be personalized with verified evidence.")
+        if st.button("Go to Job Analysis ➔", type="primary"):
+            st.session_state.current_page = "analyze"
+            st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
+    else:
+        target_job = st.session_state.fit_analysis_result["job"]
+        role_title = target_job.get("role", "Target Position")
+        company_name = target_job.get("company", "Company")
 
-    if generate_clicked:
-        if not st.session_state.user_name.strip():
-            st.error("⚠️ Please enter your name in the **Profile** tab.")
-            st.stop()
+        st.markdown('<div class="career-card">', unsafe_allow_html=True)
+        col_gen1, col_gen2 = st.columns([1.6, 1])
+        with col_gen1:
+            st.markdown(f"### Application Email for **{role_title}** at **{company_name}**")
+            st.caption("Crafted using your verified projects, genuine accomplishments, and anti-cliché phrasing.")
+        with col_gen2:
+            st.markdown("<div style='margin-top: 0.4rem;'>", unsafe_allow_html=True)
+            draft_clicked = st.button("✉️ Draft / Regenerate Email", type="primary", use_container_width=True)
+            st.markdown("</div>", unsafe_allow_html=True)
 
-        if st.session_state.portfolio_df is None or st.session_state.portfolio_df.empty:
-            st.error("⚠️ Please upload a CV/portfolio in the **Profile** tab.")
-            st.stop()
+        if draft_clicked or not st.session_state.generated_results:
+            with st.spinner("Drafting personalized application email..."):
+                try:
+                    portfolio_instance = Portfolio(data=st.session_state.portfolio_df) if st.session_state.portfolio_df is not None else None
+                    if portfolio_instance:
+                        portfolio_instance.load_portfolio(clear_existing=True)
 
-        if not api_key:
-            st.error("⚠️ Missing Groq API Key. Please ensure your API_KEY is set in your .env file.")
-            st.stop()
+                    skills = target_job.get("skills", [])
+                    matched_links = portfolio_instance.query_links(skills, n_results=3) if portfolio_instance else []
+                    cv_text = get_candidate_cv_text()
 
-        job_raw_text, err = get_current_job_text()
-        if err:
-            st.error(f"⚠️ {err}")
-            st.stop()
-
-        with st.spinner("🤖 Extracting job requirements, vector-matching portfolio links, and generating outreach email..."):
-            try:
-                jobs = chain.extract_jobs(job_raw_text)
-                if not jobs:
-                    st.warning("Could not structure job postings, using raw description fallback.")
-                    jobs = [{"role": "Target Role", "company": "Hiring Team", "skills": [], "description": job_raw_text[:300]}]
-
-                portfolio_instance = Portfolio(data=st.session_state.portfolio_df)
-                portfolio_instance.load_portfolio(clear_existing=True)
-
-                results = []
-                for job in jobs:
-                    if not st.session_state.recipient_email and job.get("contact_email"):
-                        st.session_state.recipient_email = job.get("contact_email")
-
-                    skills = job.get("skills", [])
-                    matched_links = portfolio_instance.query_links(skills, n_results=3)
-                    
                     email_result = chain.write_mail(
-                        job=job,
+                        job=target_job,
                         links=matched_links,
                         user_name=st.session_state.user_name,
                         user_college=st.session_state.user_college,
@@ -1268,606 +1693,160 @@ with tab_studio:
                         tone=selected_tone,
                         length=selected_length,
                         candidate_type=st.session_state.candidate_type,
-                        custom_instructions=st.session_state.custom_notes
+                        custom_instructions=st.session_state.custom_notes,
+                        cv_text=cv_text
                     )
 
-                    results.append({
-                        "job": job,
+                    st.session_state.generated_results = [{
+                        "job": target_job,
                         "matched_links": matched_links,
                         "email_data": email_result
-                    })
+                    }]
+                    if not st.session_state.recipient_email and target_job.get("contact_email"):
+                        st.session_state.recipient_email = target_job.get("contact_email")
 
-                st.session_state.generated_results = results
-                save_current_user_profile()
-                st.success("🎉 Email successfully crafted!")
+                    st.toast("Email drafted successfully.", icon="✅")
+                except Exception as e:
+                    st.error(f"Could not draft email: {e}")
 
-            except Exception as e:
-                st.error(f"⚠️ Generation failed: {e}")
-
-    # Display Results if available
-    if st.session_state.generated_results:
-        for idx, item in enumerate(st.session_state.generated_results):
-            job = item["job"]
-            matched_links = item["matched_links"]
+        if st.session_state.generated_results:
+            item = st.session_state.generated_results[0]
             email_data = item["email_data"]
-
-            role_title = job.get("role", "Target Position")
-            company_name = job.get("company", "Company")
-            extracted_skills = job.get("skills", [])
             subject_lines = email_data.get("subject_lines", [f"Application for {role_title} - {st.session_state.user_name}"])
             email_body = email_data.get("body", "")
 
-            st.markdown(f"### 📋 Outreach Plan for: **{role_title}** at **{company_name}**")
-            
-            st.markdown("#### 💡 High-Converting Subject Lines")
+            st.markdown("#### Subject Line Options")
             chosen_subject = st.radio(
-                "Choose your preferred subject line:",
+                "Choose preferred subject line:",
                 options=subject_lines,
                 index=0,
-                key=f"subj_radio_{idx}"
+                label_visibility="collapsed"
             )
 
-            st.markdown("#### 📝 Cold Email Body")
-            view_mode = st.radio("Display Mode:", ["Visual Preview", "Editable Text"], horizontal=True, key=f"mode_{idx}")
-            
-            if view_mode == "Visual Preview":
+            # Email Composer Window
+            word_count = len(email_body.split())
+            read_time = max(1, round(word_count / 150 * 60))
+
+            view_mode = st.radio("Editor View:", ["Formatted Preview", "Text Editor"], horizontal=True)
+
+            if view_mode == "Formatted Preview":
                 st.markdown(f"""
-                <div class="email-preview-box">
-                    <div style="color: #94a3b8; font-size: 0.85rem; margin-bottom: 0.8rem; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 0.5rem;">
-                        <b>Subject:</b> <span style="color: #38bdf8;">{chosen_subject}</span>
+                <div class="email-composer-frame">
+                    <div class="composer-toolbar">
+                        <div class="composer-dots">
+                            <span class="composer-dot red"></span>
+                            <span class="composer-dot yellow"></span>
+                            <span class="composer-dot green"></span>
+                        </div>
+                        <div style="font-size: 0.78rem; color: #94a3b8; font-weight: 600;">
+                            {word_count} words (~{read_time}s read)
+                        </div>
                     </div>
-                    <div style="white-space: pre-wrap; font-size: 0.95rem;">{email_body}</div>
+                    <div class="composer-headers">
+                        <div class="composer-row">
+                            <span class="composer-field-label">To:</span>
+                            <span class="composer-field-value">{st.session_state.recipient_email or 'Hiring Team / Recruiter'}</span>
+                        </div>
+                        <div class="composer-row">
+                            <span class="composer-field-label">Subject:</span>
+                            <span class="composer-field-value" style="font-weight: 700; color: #f8fafc;">{chosen_subject}</span>
+                        </div>
+                    </div>
+                    <div class="composer-body">{email_body}</div>
                 </div>
                 """, unsafe_allow_html=True)
                 final_email_content = email_body
             else:
                 final_email_content = st.text_area(
-                    "Edit your email before sending:",
+                    "Edit email content:",
                     value=email_body,
-                    height=300,
-                    key=f"editor_area_{idx}"
+                    height=280
                 )
 
-            # -------------------------------------------------
-            # ✉️ Email Dispatch & Action Hub
-            # -------------------------------------------------
-            st.markdown("<br>", unsafe_allow_html=True)
-            st.markdown('<div class="glass-card">', unsafe_allow_html=True)
-            st.markdown('<div class="card-header">✉️ Email Dispatch & Attachment Hub</div>', unsafe_allow_html=True)
-            
-            col_target1, col_target2 = st.columns([1.5, 1])
-            with col_target1:
-                target_email = st.text_input(
-                    "Company / Recruiter Email Address:",
-                    value=st.session_state.recipient_email,
-                    key=f"target_email_{idx}",
-                    placeholder="e.g. careers@company.com or hr@apexai.io"
-                )
-                st.session_state.recipient_email = target_email
-            with col_target2:
-                st.markdown("<div style='margin-top: 1.8rem;'>", unsafe_allow_html=True)
-                sender_display = current_user.get("email", "")
-                if sender_display:
-                    st.markdown(f'<span class="status-pill success">👤 Sending As: <b>{sender_display}</b></span>', unsafe_allow_html=True)
-                if st.session_state.cv_filename:
-                    st.markdown(f'<span class="status-pill success" style="margin-left: 0.5rem;">📎 CV: <b>{st.session_state.cv_filename}</b></span>', unsafe_allow_html=True)
-                else:
-                    st.markdown('<span class="status-pill warning" style="margin-left: 0.5rem;">⚠️ No CV uploaded yet</span>', unsafe_allow_html=True)
+            # Quick Refinement Actions
+            col_ref1, col_ref2, col_ref3, col_ref4 = st.columns(4)
+            with col_ref1:
+                if st.button("✂️ Make Shorter", use_container_width=True):
+                    with st.spinner("Shortening email..."):
+                        res = chain.write_mail(job=target_job, links=item["matched_links"], user_name=st.session_state.user_name, tone=selected_tone, length="Concise & Punchy (under 120 words)", custom_instructions="Make it concise, direct, under 110 words.")
+                        st.session_state.generated_results[0]["email_data"] = res
+                        st.rerun()
+            with col_ref2:
+                if st.button("👔 More Professional", use_container_width=True):
+                    with st.spinner("Adjusting tone..."):
+                        res = chain.write_mail(job=target_job, links=item["matched_links"], user_name=st.session_state.user_name, tone="Professional & Persuasive", custom_instructions="Professional executive tone with clean value proposition.")
+                        st.session_state.generated_results[0]["email_data"] = res
+                        st.rerun()
+            with col_ref3:
+                if st.button("💬 More Natural", use_container_width=True):
+                    with st.spinner("Adjusting tone..."):
+                        res = chain.write_mail(job=target_job, links=item["matched_links"], user_name=st.session_state.user_name, tone="Casual & Startup-Friendly", custom_instructions="Conversational, natural phrasing, low friction.")
+                        st.session_state.generated_results[0]["email_data"] = res
+                        st.rerun()
+            with col_ref4:
+                copy_js = f"navigator.clipboard.writeText(`Subject: {chosen_subject}\\n\\n{final_email_content}`);"
+                if st.button("📋 Copy Email", use_container_width=True):
+                    st.toast("Email copied to clipboard!", icon="📋")
+
+            # "Personalized using" Evidence Citations
+            highlights = email_data.get("key_highlights_used", []) or target_job.get("critical_requirements", [])[:2]
+            focus_used = email_data.get("focus_areas_addressed", "")
+            if highlights:
+                st.markdown("<div style='margin-top: 1rem; padding: 0.75rem 1rem; background: rgba(255,255,255,0.03); border-radius: 10px; border: 1px solid rgba(255,255,255,0.06);'>", unsafe_allow_html=True)
+                st.markdown(f"<span style='font-size: 0.78rem; font-weight: 700; color: #818cf8; text-transform: uppercase;'>Personalized using:</span> <span style='font-size: 0.84rem; color: #cbd5e1;'>{', '.join(highlights[:3])}</span>", unsafe_allow_html=True)
                 st.markdown("</div>", unsafe_allow_html=True)
 
-            col_act0, col_act1, col_act2, col_act3, col_act4 = st.columns([1.5, 1.4, 1.1, 1.3, 1.0])
-            
-            user_sender_email = current_user.get("email", "")
-            outreach_msg_id = f"<outreach_{user_id}_{int(datetime.now().timestamp())}_{idx}@{user_sender_email.split('@')[-1] if '@' in user_sender_email else 'outreachai.local'}>"
-            subject_encoded = urllib.parse.quote(chosen_subject)
-            body_encoded = urllib.parse.quote(final_email_content)
-            mailto_to = target_email.strip() if target_email else ""
-            gmail_link = f"https://mail.google.com/mail/?view=cm&fs=1&authuser={urllib.parse.quote(user_sender_email)}&to={mailto_to}&su={subject_encoded}&body={body_encoded}"
+            # Dispatch Options
+            st.markdown("<hr style='margin: 1.5rem 0; border-color: rgba(255,255,255,0.06);'>", unsafe_allow_html=True)
+            st.markdown("#### 🚀 Dispatch to Email Client")
+            st.caption("Open pre-filled draft in your desktop mail app with your CV attached automatically.")
 
-            with col_act0:
-                if st.button("🚀 Send Email (Direct SMTP)", key=f"btn_smtp_send_{idx}", type="primary", use_container_width=True, help="Sends directly from your verified email address via SMTP with your CV attached automatically."):
-                    if not target_email or "@" not in target_email:
-                        st.error("❌ Please specify a valid Recruiter / Company Email above.")
-                    else:
-                        with st.spinner("Connecting to mail server and dispatching application..."):
-                            app_db_id = tracker.save_application(
-                                user_id=user_id,
-                                company=company_name,
-                                role=role_title,
-                                recipient_email=target_email,
-                                match_score=85,
-                                subject_line=chosen_subject,
-                                email_body=final_email_content,
-                                status="Drafted",
-                                sender_email=user_sender_email
-                            )
-                            smtp_res = email_sync.send_email_smtp(
-                                user_id=user_id,
-                                recipient_email=target_email,
-                                subject=chosen_subject,
-                                body_text=final_email_content,
-                                app_id=app_db_id,
-                                cv_path=st.session_state.cv_file_path
-                            )
-                            if smtp_res.get("success"):
-                                st.balloons()
-                                cv_note = f" with `{st.session_state.cv_filename}` attached" if smtp_res.get("attached_cv") else ""
-                                st.success(f"🎉 **Email Sent!** Delivered to `{target_email}`{cv_note}. Application logged as **Applied** in Tab 5!")
-                            else:
-                                st.error(f"⚠️ {smtp_res.get('error')}")
+            col_disp1, col_disp2 = st.columns([1.5, 1])
+            with col_disp1:
+                st.session_state.recipient_email = st.text_input("Recipient / Recruiter Email:", value=st.session_state.recipient_email, placeholder="e.g. hiring@company.com")
+                available_clients = get_installed_mail_clients()
+                client_labels = [c["label"] for c in available_clients]
+                chosen_client_label = st.selectbox("Select Desktop Client:", options=client_labels, index=0)
+                chosen_client = next((c for c in available_clients if c["label"] == chosen_client_label), available_clients[0])
 
-            with col_act1:
-                if st.button("✉️ Apple Mail (CV Attached)", key=f"btn_apple_mail_{idx}", use_container_width=True, help="Opens Apple Mail from your signed-in email address with recipient, subject, body, AND your uploaded CV already attached!"):
-                    success, msg = open_in_apple_mail(
-                        recipient_email=target_email,
+            with col_disp2:
+                st.markdown("<div style='margin-top: 1.7rem;'>", unsafe_allow_html=True)
+                if st.button(f"Open in {chosen_client['name']} ➔", type="primary", use_container_width=True):
+                    success, msg = open_in_selected_mail_client(
+                        client_id=chosen_client["id"],
+                        recipient_email=st.session_state.recipient_email,
                         subject=chosen_subject,
                         body=final_email_content,
                         attachment_path=st.session_state.cv_file_path,
-                        sender_email=user_sender_email
+                        sender_email=current_user.get("email")
                     )
                     if success:
-                        st.balloons()
-                        st.success(f"🎉 **Apple Mail Opened!** Sending from `{user_sender_email}` to `{target_email or 'Draft'}` with `{st.session_state.cv_filename or 'CV'}` attached. Simply hit **Send** in your Mail app!")
-                        tracker.save_application(
-                            user_id=user_id,
-                            company=company_name,
-                            role=role_title,
-                            recipient_email=target_email,
-                            match_score=85,
-                            subject_line=chosen_subject,
-                            email_body=final_email_content,
-                            status="Applied",
-                            message_id=outreach_msg_id,
-                            sender_email=user_sender_email
-                        )
+                        st.toast(f"Opened {chosen_client['name']} with draft and CV attached!", icon="🎉")
                     else:
-                        mailto_link = f"mailto:{mailto_to}?subject={subject_encoded}&body={body_encoded}"
-                        st.markdown(f'<a href="{mailto_link}" target="_blank" style="color: #38bdf8;">Click here to open default mail client</a>', unsafe_allow_html=True)
-            
-            with col_act2:
-                st.markdown(
-                    f'<a href="{gmail_link}" target="_blank" style="display: block; text-align: center; background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.4); color: #fca5a5; padding: 0.65rem; border-radius: 10px; font-weight: 700; text-decoration: none;">📮 Gmail Web</a>',
-                    unsafe_allow_html=True
-                )
-            with col_act3:
+                        st.error(msg)
+                st.markdown("</div>", unsafe_allow_html=True)
+
+            col_alt1, col_alt2 = st.columns(2)
+            with col_alt1:
+                safe_recip = st.session_state.recipient_email.strip()
+                import urllib.parse
+                gmail_link = f"https://mail.google.com/mail/?view=cm&fs=1&to={urllib.parse.quote(safe_recip)}&su={urllib.parse.quote(chosen_subject)}&body={urllib.parse.quote(final_email_content)}"
+                st.markdown(f'<a href="{gmail_link}" target="_blank" style="display: block; text-align: center; background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.35); color: #fca5a5; padding: 0.6rem; border-radius: 8px; font-weight: 600; text-decoration: none;">📮 Compose in Gmail Web</a>', unsafe_allow_html=True)
+            with col_alt2:
                 eml_data = build_eml_message(
-                    recipient_email=target_email,
+                    recipient_email=st.session_state.recipient_email,
                     subject=chosen_subject,
                     body=final_email_content,
                     cv_bytes=st.session_state.cv_file_bytes,
                     cv_name=st.session_state.cv_filename,
-                    sender_email=user_sender_email
+                    sender_email=current_user.get("email")
                 )
                 st.download_button(
-                    label="📎 Draft with Attached CV (.eml)",
+                    label="📎 Download .eml Draft (CV Attached)",
                     data=eml_data,
                     file_name=f"outreach_{role_title.replace(' ', '_').lower()}.eml",
                     mime="message/rfc822",
-                    help="Downloads a pre-filled draft email with your CV already attached.",
-                    use_container_width=True
-                )
-            with col_act4:
-                st.download_button(
-                    label="💾 Download TXT",
-                    data=f"To: {target_email}\nSubject: {chosen_subject}\n\n{final_email_content}",
-                    file_name=f"cold_email_{role_title.replace(' ', '_').lower()}.txt",
-                    mime="text/plain",
                     use_container_width=True
                 )
 
-            st.markdown("<br>", unsafe_allow_html=True)
-            if st.button(f"📌 Save '{company_name}' to Application Tracker", key=f"save_tracker_{idx}"):
-                tracker.save_application(
-                    user_id=user_id,
-                    company=company_name,
-                    role=role_title,
-                    recipient_email=target_email,
-                    match_score=85,
-                    subject_line=chosen_subject,
-                    email_body=final_email_content,
-                    status="Applied",
-                    message_id=outreach_msg_id,
-                    sender_email=user_sender_email
-                )
-                st.toast(f"✅ Saved application for {company_name} to Tracker!", icon="📂")
-
-            st.markdown('</div>', unsafe_allow_html=True)
-
-# ---------------------------------------------------------
-# TAB 5: Application Tracker & Automatic Reply Intelligence
-# ---------------------------------------------------------
-with tab_tracker:
-    st.markdown('<div class="glass-card">', unsafe_allow_html=True)
-    st.markdown('<div class="card-header">🗂️ Application Pipeline & Automatic Reply Intelligence</div>', unsafe_allow_html=True)
-
-    # Automatic background check once per session when credentials are configured
-    if "auto_synced_session" not in st.session_state:
-        st.session_state.auto_synced_session = False
-
-    sync_cfg = tracker.get_user_mail_config(user_id)
-    if sync_cfg.get("app_password") and not st.session_state.auto_synced_session:
-        st.session_state.auto_synced_session = True
-        auto_res = email_sync.sync_user_mailbox(user_id=user_id, chain_instance=chain)
-        if auto_res.get("success") and auto_res.get("matched_count", 0) > 0:
-            st.toast(f"📬 Detected {auto_res['matched_count']} new company replies!", icon="🎉")
-
-    # Top Control Bar: Sync & Simulator
-    col_tb1, col_tb2 = st.columns([1.5, 1])
-    with col_tb1:
-        st.markdown("##### 📬 Automatic Mailbox Reply Sync")
-        sync_cfg = tracker.get_user_mail_config(user_id)
-        last_sync_txt = sync_cfg.get("last_synced_at") or "Never"
-        st.caption(f"Sync incoming emails from **{sync_cfg.get('email_address') or current_user.get('email')}** via IMAP (Last synced: `{last_sync_txt}`).")
-        
-        col_sbtn1, col_sbtn2 = st.columns(2)
-        with col_sbtn1:
-            if st.button("🔄 Sync & Check Replies", key="btn_sync_mailbox", type="primary", use_container_width=True):
-                with st.spinner("Connecting to mailbox and scanning for replies..."):
-                    sync_res = email_sync.sync_user_mailbox(user_id=user_id, chain_instance=chain)
-                    if sync_res.get("success"):
-                        st.toast(f"✅ Sync complete! Checked {sync_res.get('synced_count', 0)} messages, matched {sync_res.get('matched_count', 0)} replies.", icon="📬")
-                        st.rerun()
-                    else:
-                        st.error(f"⚠️ {sync_res.get('error')}")
-        with col_sbtn2:
-            st.caption("Auto-checks In-Reply-To, References, and Message-IDs.")
-
-    with col_tb2:
-        with st.expander("⚙️ Mailbox Credentials", expanded=False):
-            cfg_email = st.text_input(
-                "Email Address:",
-                value=sync_cfg.get("email_address", current_user.get("email", "")),
-                key="cfg_email_addr",
-                placeholder="e.g. yourname@gmail.com"
-            )
-            cfg_pwd = st.text_input(
-                "Password / App Password:",
-                type="password",
-                value=sync_cfg.get("app_password", ""),
-                key="cfg_app_pwd",
-                placeholder="Enter password or 16-char App Password"
-            )
-            
-            show_advanced = st.checkbox("Custom server settings (optional)", value=False, key="chk_custom_imap")
-            if show_advanced:
-                cfg_host = st.text_input("IMAP Host:", value=sync_cfg.get("imap_host") or "imap.gmail.com", key="cfg_imap_host")
-                cfg_port = st.number_input("IMAP Port:", value=int(sync_cfg.get("imap_port") or 993), key="cfg_imap_port")
-            else:
-                cfg_host = ""
-                cfg_port = 993
-
-            if st.button("💾 Save & Verify Connection", key="btn_save_mail_cfg", type="primary", use_container_width=True):
-                if not cfg_email or "@" not in cfg_email:
-                    st.error("❌ Please enter a valid email address.")
-                elif not cfg_pwd:
-                    st.error("❌ Please enter your password.")
-                else:
-                    with st.spinner("🔄 Checking email and password with server..."):
-                        is_valid, msg, det_host, det_port = email_sync.verify_mailbox_credentials(
-                            email_address=cfg_email,
-                            password=cfg_pwd,
-                            host=cfg_host if show_advanced else "",
-                            port=int(cfg_port) if show_advanced else 993
-                        )
-                    if not is_valid:
-                        st.error("❌ The email address or password is wrong! Please check your credentials and try again.")
-                        if "@gmail.com" in cfg_email.lower():
-                            st.info("💡 **Gmail Notice:** Google accounts with 2-Step Verification require a 16-character **App Password** (not your regular login password). You can generate one at: [Google App Passwords](https://myaccount.google.com/apppasswords).")
-                        else:
-                            st.caption(f"Server response: {msg}")
-                    else:
-                        tracker.save_user_mail_config(
-                            user_id=user_id,
-                            imap_host=det_host,
-                            imap_port=det_port,
-                            email_address=cfg_email,
-                            app_password=cfg_pwd
-                        )
-                        st.success("✅ Connected successfully! Your email address and password are correct.")
-                        st.toast("✅ Mailbox verified & saved!", icon="🎉")
-                        st.rerun()
-
-    # Simulator for instant verification
-    all_apps = tracker.get_all_applications(user_id=user_id)
-    if all_apps:
-        with st.expander("🧪 Test & Simulate Recruiter Reply (Instant Verification)", expanded=False):
-            st.caption("Simulate an incoming company reply to test deterministic matching, quoted-text cleaning, and AI entity extraction without waiting for a real email.")
-            col_sim1, col_sim2 = st.columns([1, 1.5])
-            with col_sim1:
-                app_options = {f"{a['company']} - {a['role']} (ID #{a['id']})": a['id'] for a in all_apps}
-                selected_app_label = st.selectbox("Target Application to Reply To:", options=list(app_options.keys()))
-                sim_app_id = app_options[selected_app_label]
-                
-                preset_type = st.selectbox(
-                    "Choose Realistic Reply Scenario:",
-                    [
-                        "1. Interview Invitation (with Google Meet Link)",
-                        "2. Technical Coding Assessment (with Deadline)",
-                        "3. Candidate Shortlisted / Additional Info",
-                        "4. Formal Job Offer",
-                        "5. Polite Rejection"
-                    ]
-                )
-
-            with col_sim2:
-                default_sim_texts = {
-                    "1. Interview Invitation (with Google Meet Link)": "Hi Candidate,\n\nThanks for reaching out! We reviewed your profile and were really impressed by your projects.\n\nWe would love to invite you for a 45-minute technical video interview on Thursday, Oct 15 at 2:00 PM EST.\n\nYou can join using this Google Meet link: https://meet.google.com/abc-defg-hij\n\nPlease let us know if that time works for you!\n\nBest regards,\nSarah Jenkins\nHead of Engineering Recruiting",
-                    "2. Technical Coding Assessment (with Deadline)": "Hello,\n\nThank you for your application. As a next step in our process, please complete our online coding challenge on HackerRank: https://hackerrank.com/test/apex-ai-dev\n\nThe test must be completed within 72 hours (Deadline: Sunday at 11:59 PM EST).\n\nGood luck,\nTalent Acquisition Team",
-                    "3. Candidate Shortlisted / Additional Info": "Dear Candidate,\n\nYour application has been shortlisted for the next review stage. Could you please send over your updated GitHub repository links and confirm your earliest start date availability?\n\nThanks,\nHiring Manager",
-                    "4. Formal Job Offer": "Dear Candidate,\n\nOn behalf of our entire leadership team, we are thrilled to offer you the position! We have attached your formal offer letter and compensation package.\n\nPlease review and confirm acceptance by next Monday.\n\nWarm congratulations,\nVP of People",
-                    "5. Polite Rejection": "Hi,\n\nThank you for taking the time to share your application. Although your background is impressive, we have decided to move forward with another candidate whose experience more closely matches our immediate needs.\n\nWe wish you all the best in your job search."
-                }
-                custom_sim_text = st.text_area("Simulated Email Text:", value=default_sim_texts.get(preset_type, ""), height=150)
-                if st.button("🚀 Run Reply Detection & AI Analysis", type="primary", key="btn_run_sim"):
-                    with st.spinner("Processing incoming reply, running deterministic matcher, and extracting entities..."):
-                        sim_res = email_sync.simulate_incoming_reply(
-                            user_id=user_id,
-                            app_id=sim_app_id,
-                            raw_reply_text=custom_sim_text,
-                            chain_instance=chain
-                        )
-                        if sim_res.get("status") == "SUCCESS":
-                            st.balloons()
-                            st.success(f"🎉 **Reply Detected & Processed!** Matched to **{sim_res.get('company')}** with **{sim_res.get('confidence')}** Confidence. Status updated!")
-                            st.rerun()
-                        elif sim_res.get("status") == "SKIPPED_ALREADY_PROCESSED":
-                            st.warning("⚠️ This message has already been processed (Idempotent protection active).")
-                        else:
-                            st.error(f"⚠️ Simulation failed: {sim_res.get('error')}")
-
-    st.markdown("<hr>", unsafe_allow_html=True)
-
-    if not all_apps:
-        st.info("💡 No applications saved yet. Generate and send an outreach email in Tab 4 to automatically log it here!")
-    else:
-        total_apps = len(all_apps)
-        applied_count = sum(1 for a in all_apps if a["status"] in ["Applied", "Sent"])
-        interview_count = sum(1 for a in all_apps if a["status"] in ["Interview Scheduled", "Interviewing"])
-        offer_count = sum(1 for a in all_apps if a["status"] == "Offer")
-        replied_count = sum(1 for a in all_apps if a["status"] in ["Reply Received", "Assessment / Test"])
-
-        col_stat1, col_stat2, col_stat3, col_stat4 = st.columns(4)
-        col_stat1.metric("Total Outreach", total_apps)
-        col_stat2.metric("Sent / Applied", applied_count)
-        col_stat3.metric("Replies / Interviews", interview_count + replied_count)
-        col_stat4.metric("Offers 🎉", offer_count)
-
-        st.markdown("<hr>", unsafe_allow_html=True)
-
-        col_flt1, col_flt2 = st.columns([2, 1])
-        with col_flt1:
-            search_query = st.text_input("🔍 Search by Company or Role:", placeholder="e.g. Apex Technologies")
-        with col_flt2:
-            status_filter = st.selectbox("Filter by Status:", ["All", "Applied", "Reply Received", "Interview Scheduled", "Assessment / Test", "Offer", "Rejected", "Drafted", "Archived"])
-
-        filtered_apps = all_apps
-        if search_query:
-            filtered_apps = [a for a in filtered_apps if search_query.lower() in a["company"].lower() or search_query.lower() in a["role"].lower()]
-        if status_filter != "All":
-            filtered_apps = [a for a in filtered_apps if a["status"] == status_filter]
-
-        st.markdown(f"#### Active Applications & Reply Conversations ({len(filtered_apps)})")
-
-        for app in filtered_apps:
-            # Check conversation history & reply analysis
-            app_messages = tracker.get_application_messages(app["id"])
-            latest_analysis = tracker.get_latest_reply_analysis(app["id"])
-            received_msgs = [m for m in app_messages if m["direction"] == "RECEIVED"]
-
-            has_reply = len(received_msgs) > 0 or app["status"] in ["Interview Scheduled", "Reply Received", "Offer", "Assessment / Test"]
-            expander_title = f"💼 **{app['company']}** — {app['role']} [{app['status']}]"
-            if latest_analysis and latest_analysis.get("category"):
-                expander_title += f" • 📬 {latest_analysis.get('category')}"
-
-            with st.expander(expander_title, expanded=has_reply):
-                # ---------------------------------------------------------
-                # Step 1: Original Sent Outreach
-                # ---------------------------------------------------------
-                st.markdown("""
-                <div class="timeline-card">
-                    <div class="timeline-step sent">📤 Step 1: Original Sent Outreach</div>
-                """, unsafe_allow_html=True)
-                
-                col_sent1, col_sent2 = st.columns([1.5, 1])
-                with col_sent1:
-                    st.markdown(f"**Recipient:** `{app['recipient_email'] or 'N/A'}`")
-                    st.markdown(f"**Subject:** *{app['subject_line']}*")
-                with col_sent2:
-                    st.markdown(f"**Date Applied:** {app['applied_at'] or app['created_at']}")
-                    if app.get("last_message_id"):
-                        st.caption(f"RFC Message-ID: `{app['last_message_id']}`")
-                st.markdown("</div>", unsafe_allow_html=True)
-
-                # ---------------------------------------------------------
-                # Step 2 & 3: Company Reply Detected & AI Intelligence
-                # ---------------------------------------------------------
-                if received_msgs:
-                    latest_reply = received_msgs[-1]
-                    conf_level = latest_reply.get("confidence", "HIGH")
-                    conf_class = "confidence-badge-high" if conf_level == "HIGH" else ("confidence-badge-medium" if conf_level == "MEDIUM" else "confidence-badge-low")
-
-                    st.markdown(f"""
-                    <div class="timeline-card" style="border-left: 4px solid #22c55e;">
-                        <div style="display: flex; justify-content: space-between; align-items: center;">
-                            <div class="timeline-step received">📥 Step 2: Company Reply Automatically Detected</div>
-                            <span class="{conf_class}">● {conf_level} CONFIDENCE MATCH</span>
-                        </div>
-                        <div style="font-size: 0.88rem; color: #94a3b8; margin-bottom: 0.6rem;">
-                            <b>From:</b> {latest_reply.get('sender_email')} | <b>Received:</b> {latest_reply.get('received_at')}
-                        </div>
-                        <div style="background: rgba(15, 23, 42, 0.6); padding: 0.85rem; border-radius: 8px; font-size: 0.9rem; white-space: pre-wrap; color: #e2e8f0; max-height: 180px; overflow-y: auto;">{latest_reply.get('cleaned_body') or latest_reply.get('body_text')}</div>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-                    if latest_analysis:
-                        cat_color = "#10b981" if latest_analysis.get("category") == "Offer" else ("#6366f1" if "Interview" in latest_analysis.get("category", "") else "#f59e0b")
-                        st.markdown(f"""
-                        <div class="timeline-card" style="border-left: 4px solid {cat_color};">
-                            <div class="timeline-step analysis">🤖 Step 3: AI Intelligence & Entity Extraction</div>
-                            <h4 style="margin-top: 0.2rem; color: #f8fafc;">🎯 Category: <span style="color: {cat_color};">{latest_analysis.get('category')}</span></h4>
-                        """, unsafe_allow_html=True)
-
-                        # Entity Grid
-                        col_e1, col_e2, col_e3 = st.columns(3)
-                        with col_e1:
-                            if latest_analysis.get("interview_date") or latest_analysis.get("interview_time"):
-                                st.markdown(f"""
-                                <div class="entity-pill">
-                                    <div class="entity-label">📅 Interview Date & Time</div>
-                                    <div class="entity-val">{latest_analysis.get('interview_date', '')} {latest_analysis.get('interview_time', '')}</div>
-                                </div>
-                                """, unsafe_allow_html=True)
-                            if latest_analysis.get("interview_type"):
-                                st.markdown(f"""
-                                <div class="entity-pill" style="margin-top: 0.5rem;">
-                                    <div class="entity-label">💻 Format / Type</div>
-                                    <div class="entity-val">{latest_analysis.get('interview_type')}</div>
-                                </div>
-                                """, unsafe_allow_html=True)
-
-                        with col_e2:
-                            meet_url = latest_analysis.get("meeting_link")
-                            if meet_url:
-                                st.markdown(f"""
-                                <div class="entity-pill">
-                                    <div class="entity-label">🔗 Meeting Link</div>
-                                    <div class="entity-val"><a href="{meet_url}" target="_blank" style="color: #38bdf8; font-weight: 700;">Open Meeting / Test ➔</a></div>
-                                </div>
-                                """, unsafe_allow_html=True)
-                            if latest_analysis.get("deadline"):
-                                st.markdown(f"""
-                                <div class="entity-pill" style="margin-top: 0.5rem;">
-                                    <div class="entity-label">⏳ Response Deadline</div>
-                                    <div class="entity-val" style="color: #f87171;">{latest_analysis.get('deadline')}</div>
-                                </div>
-                                """, unsafe_allow_html=True)
-
-                        with col_e3:
-                            if latest_analysis.get("recruiter_contact"):
-                                st.markdown(f"""
-                                <div class="entity-pill">
-                                    <div class="entity-label">👤 Recruiter Contact</div>
-                                    <div class="entity-val">{latest_analysis.get('recruiter_contact')}</div>
-                                </div>
-                                """, unsafe_allow_html=True)
-                            if latest_analysis.get("requested_documents"):
-                                st.markdown(f"""
-                                <div class="entity-pill" style="margin-top: 0.5rem;">
-                                    <div class="entity-label">📄 Requested Docs</div>
-                                    <div class="entity-val">{latest_analysis.get('requested_documents')}</div>
-                                </div>
-                                """, unsafe_allow_html=True)
-
-                        if latest_analysis.get("required_action"):
-                            st.markdown(f"""
-                            <div style="background: rgba(99, 102, 241, 0.15); border: 1px solid rgba(99, 102, 241, 0.4); border-radius: 8px; padding: 0.75rem 1rem; margin-top: 0.8rem; color: #c7d2fe; font-size: 0.9rem;">
-                                <b>⚡ Required Action:</b> {latest_analysis.get('required_action')}
-                            </div>
-                            """, unsafe_allow_html=True)
-
-                        if latest_analysis.get("important_notes"):
-                            st.caption(f"📝 Notes: {latest_analysis.get('important_notes')}")
-
-                        if st.button(f"🔍 Re-Analyze Reply", key=f"reanalyze_{app['id']}"):
-                            with st.spinner("Re-analyzing reply text with AI..."):
-                                re_res = chain.analyze_reply(
-                                    reply_text=latest_reply.get("cleaned_body") or latest_reply.get("body_text", ""),
-                                    original_job_context={"role": app["role"], "company": app["company"]}
-                                )
-                                tracker.save_reply_analysis(app["id"], latest_reply.get("message_id"), re_res)
-                                st.toast("✅ Re-analysis complete!", icon="🤖")
-                                st.rerun()
-
-                        st.markdown("</div>", unsafe_allow_html=True)
-
-                # ---------------------------------------------------------
-                # Step 4: Application Pipeline & Actions
-                # ---------------------------------------------------------
-                st.markdown("<br>", unsafe_allow_html=True)
-                col_act_left, col_act_right = st.columns([1, 1.2])
-                with col_act_left:
-                    current_status = app["status"]
-                    status_options = ["Drafted", "Applied", "Reply Received", "Interview Scheduled", "Assessment / Test", "Offer", "Rejected", "Archived"]
-                    status_idx = status_options.index(current_status) if current_status in status_options else 0
-                    
-                    new_status = st.selectbox("Update Pipeline Status:", status_options, index=status_idx, key=f"status_select_{app['id']}")
-                    if new_status != current_status:
-                        tracker.update_application_status(app["id"], new_status)
-                        st.toast(f"Status updated to '{new_status}'!", icon="✅")
-                        st.rerun()
-
-                with col_act_right:
-                    current_notes = st.text_area("Recruiter Notes / Next Steps:", value=app.get("notes", ""), key=f"notes_{app['id']}", height=80)
-                    col_save_n, col_del_a = st.columns([1, 1])
-                    with col_save_n:
-                        if st.button("💾 Save Notes", key=f"save_notes_{app['id']}"):
-                            tracker.update_application_status(app["id"], app["status"], notes=current_notes)
-                            st.toast("Notes saved!", icon="📝")
-                    with col_del_a:
-                        if st.button("🗑️ Delete Application", key=f"del_app_{app['id']}"):
-                            tracker.delete_application(app["id"])
-                            st.toast(f"Deleted application for {app['company']}", icon="🗑️")
-                            st.rerun()
-
-                st.markdown("##### ⚡ Follow-Up Sequence Generator")
-                fu_key = f"fu_{app['id']}"
-                if st.button(f"✉️ Draft Follow-Up Email for {app['company']}", key=f"gen_follow_{app['id']}"):
-                    with st.spinner("Drafting polite follow-up with AI..."):
-                        follow_res = chain.write_followup_mail(
-                            job={"role": app["role"], "company": app["company"]},
-                            user_name=st.session_state.user_name or "Candidate",
-                            days_since=4,
-                            original_subject=app.get("subject_line", "")
-                        )
-                        st.session_state[f"{fu_key}_subj"] = follow_res.get('subject', f"Following up: {app.get('subject_line', '')}")
-                        st.session_state[f"{fu_key}_body"] = follow_res.get('body', '')
-
-                if f"{fu_key}_subj" in st.session_state:
-                    fu_subj_val = st.text_input("Follow-Up Subject:", value=st.session_state[f"{fu_key}_subj"], key=f"inp_fu_s_{app['id']}")
-                    fu_body_val = st.text_area("Follow-Up Email:", value=st.session_state[f"{fu_key}_body"], key=f"inp_fu_b_{app['id']}", height=120)
-                    col_fu1, col_fu2 = st.columns([1, 1])
-                    with col_fu1:
-                        if st.button("🚀 Send Follow-Up (Direct SMTP)", key=f"btn_send_fu_{app['id']}", type="primary", use_container_width=True):
-                            with st.spinner("Sending follow-up..."):
-                                fu_smtp_res = email_sync.send_email_smtp(
-                                    user_id=user_id,
-                                    recipient_email=app["recipient_email"],
-                                    subject=fu_subj_val,
-                                    body_text=fu_body_val,
-                                    app_id=app["id"],
-                                    cv_path=st.session_state.cv_file_path
-                                )
-                                if fu_smtp_res.get("success"):
-                                    tracker.log_followup(app["id"])
-                                    st.balloons()
-                                    st.success("🎉 Follow-up email sent successfully via SMTP!")
-                                    del st.session_state[f"{fu_key}_subj"]
-                                    del st.session_state[f"{fu_key}_body"]
-                                    st.rerun()
-                                else:
-                                    st.error(f"⚠️ {fu_smtp_res.get('error')}")
-                    with col_fu2:
-                        if st.button("✉️ Open in Apple Mail", key=f"btn_open_fu_apple_{app['id']}", use_container_width=True):
-                            open_in_apple_mail(
-                                recipient_email=app["recipient_email"],
-                                subject=fu_subj_val,
-                                body=fu_body_val,
-                                attachment_path=st.session_state.cv_file_path,
-                                sender_email=current_user.get("email", "")
-                            )
-                            tracker.log_followup(app["id"])
-
-        # Unmatched incoming replies section
-        unmatched_list = tracker.get_unmatched_replies(user_id=user_id)
-        if unmatched_list:
-            with st.expander(f"⚠️ Unmatched / Needs Review Incoming Emails ({len(unmatched_list)})", expanded=False):
-                st.caption("These emails arrived from companies but could not be confidently linked to an existing application. No application status was modified.")
-                for un_msg in unmatched_list:
-                    st.markdown(f"""
-                    <div style="background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.3); border-radius: 10px; padding: 0.85rem; margin-bottom: 0.6rem;">
-                        <b>From:</b> {un_msg['sender_email']} | <b>Subject:</b> {un_msg['subject']}<br>
-                        <span style="font-size: 0.82rem; color: #94a3b8;">{un_msg.get('cleaned_body', '')[:200]}...</span>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-    st.markdown('</div>', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)

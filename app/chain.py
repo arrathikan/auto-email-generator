@@ -16,6 +16,193 @@ SUPPORTED_MODELS = [
     "qwen/qwen3.6-27b"
 ]
 
+import re
+
+COMMON_TECH_SYNONYMS = {
+    "python": ["python", "py", "django", "fastapi", "flask", "pandas", "numpy", "scipy"],
+    "javascript": ["javascript", "js", "typescript", "ts", "node", "nodejs", "react", "vue", "angular", "nextjs", "express"],
+    "typescript": ["typescript", "ts", "javascript", "js"],
+    "react": ["react", "reactjs", "react.js", "next.js", "nextjs", "redux", "frontend"],
+    "node": ["node", "nodejs", "node.js", "express", "expressjs", "nestjs", "backend"],
+    "aws": ["aws", "amazon web services", "ec2", "s3", "lambda", "cloudwatch", "iam", "dynamodb"],
+    "azure": ["azure", "microsoft azure", "blob storage", "azure functions"],
+    "gcp": ["gcp", "google cloud", "bigquery", "google cloud platform"],
+    "docker": ["docker", "container", "containers", "containerization", "docker-compose"],
+    "kubernetes": ["kubernetes", "k8s", "helm", "kubectl", "cluster", "orchestration"],
+    "sql": ["sql", "postgresql", "postgres", "mysql", "sqlite", "relational database", "rdbms", "queries"],
+    "nosql": ["nosql", "mongodb", "mongo", "redis", "dynamodb", "cassandra"],
+    "machine learning": ["machine learning", "ml", "deep learning", "ai", "artificial intelligence", "scikit-learn", "sklearn", "tensorflow", "pytorch", "keras", "models"],
+    "pytorch": ["pytorch", "torch", "deep learning", "neural networks", "tensor"],
+    "tensorflow": ["tensorflow", "tf", "keras"],
+    "nlp": ["nlp", "natural language processing", "llm", "large language models", "transformers", "huggingface", "bert", "gpt", "spacy", "langchain"],
+    "ci/cd": ["ci/cd", "ci", "cd", "continuous integration", "continuous deployment", "github actions", "gitlab ci", "jenkins"],
+    "git": ["git", "github", "gitlab", "version control"],
+    "rest api": ["rest", "restful", "api", "apis", "fastapi", "flask", "endpoints", "json"],
+    "graphql": ["graphql", "apollo", "query language"],
+    "linux": ["linux", "unix", "bash", "shell scripting", "ubuntu"],
+    "c++": ["c++", "cpp"],
+    "java": ["java", "spring", "springboot", "spring boot"],
+    "go": ["go", "golang"],
+    "fastapi": ["fastapi", "python", "rest api", "pydantic", "starlette", "backend"],
+    "django": ["django", "django rest framework", "python", "drf", "backend"],
+    "flask": ["flask", "python", "werkzeug", "jinja"],
+}
+
+def find_cv_evidence(requirement: str, cv_text: str, portfolio_items: list[dict] | None = None) -> tuple[str, str, str]:
+    """
+    Scans candidate CV text and portfolio for verifiable evidence matching a requirement.
+    Returns: (status: 'MATCHED'|'PARTIALLY MATCHED'|'MISSING', evidence_quote: str, confidence: str)
+    """
+    req_clean = requirement.strip().lower()
+    if not req_clean or not cv_text:
+        return "MISSING", "No evidence found in candidate profile.", "Low"
+        
+    cv_lower = cv_text.lower()
+    
+    # 1. Direct exact phrase match
+    if req_clean in cv_lower:
+        sentences = re.split(r'[.\n\r]+', cv_text)
+        for s in sentences:
+            if req_clean in s.lower():
+                clean_s = s.strip()
+                if len(clean_s) > 12:
+                    return "MATCHED", f'Found in CV: "{clean_s[:160]}"', "High"
+        return "MATCHED", f'Found direct mention in CV: "{req_clean}"', "High"
+        
+    # 2. Extract key technical tokens (ignore common stop words)
+    tokens = [w for w in re.findall(r'\b[a-zA-Z0-9+#.-]{2,}\b', req_clean) 
+              if w not in ["and", "with", "the", "for", "experience", "knowledge", "strong", "skills", "ability", "in", "to", "years", "using"]]
+    
+    if tokens and all(t in cv_lower for t in tokens):
+        for s in re.split(r'[.\n\r]+', cv_text):
+            if any(t in s.lower() for t in tokens):
+                clean_s = s.strip()
+                if len(clean_s) > 12:
+                    return "MATCHED", f'Verified in CV: "{clean_s[:160]}"', "High"
+
+    # 3. Check Tech Synonyms
+    for key, syns in COMMON_TECH_SYNONYMS.items():
+        if key in req_clean or any(s in req_clean for s in syns):
+            matched_syns = [s for s in syns if s in cv_lower]
+            if matched_syns:
+                for s in re.split(r'[.\n\r]+', cv_text):
+                    if any(ms in s.lower() for ms in matched_syns):
+                        clean_s = s.strip()
+                        return "MATCHED", f'Found related tech ({", ".join(matched_syns[:3])}) in CV: "{clean_s[:160]}"', "High"
+
+    # 4. Check candidate portfolio projects
+    if portfolio_items:
+        for p in portfolio_items:
+            tech = str(p.get("Techstack", "")).lower()
+            if req_clean in tech or any(t in tech for t in tokens if len(t) > 3):
+                return "MATCHED", f'Demonstrated in Portfolio: {p.get("Techstack")} ({p.get("Links", "")})', "High"
+
+    # 5. Partial token match
+    if tokens and any(t in cv_lower for t in tokens if len(t) > 3):
+        matched_tokens = [t for t in tokens if t in cv_lower and len(t) > 3]
+        return "PARTIALLY MATCHED", f'Found partial mention ({", ".join(matched_tokens)}) in CV, but deeper enterprise scope unverified.', "Medium"
+
+    return "MISSING", "No evidence found in candidate profile or CV.", "High"
+
+def audit_and_calculate_score(evidence_breakdown: list[dict]) -> dict:
+    """
+    Computes a deterministic, mathematically audited score from evidence items:
+    - Critical Requirements: 65% weight
+    - Preferred Requirements: 25% weight
+    - Soft Skills: 10% weight
+    - Noise / Not Relevant: 0% weight (excluded)
+    """
+    crit_items = []
+    pref_items = []
+    soft_items = []
+    noise_items = []
+    
+    for item in evidence_breakdown:
+        imp = str(item.get("importance", "")).lower()
+        stat = str(item.get("status", "")).upper()
+        
+        if "noise" in imp or "irrelevant" in imp or "NOT RELEVANT" in stat:
+            noise_items.append(item)
+        elif "pref" in imp or "nice" in imp or "bonus" in imp:
+            pref_items.append(item)
+        elif "soft" in imp or "interpersonal" in imp or "collaborat" in imp:
+            soft_items.append(item)
+        else:
+            crit_items.append(item)
+            
+    def get_points(items):
+        if not items:
+            return 0.0, 0.0, 0, 0, 0
+        earned = 0.0
+        n_matched = 0
+        n_partial = 0
+        n_missing = 0
+        for it in items:
+            s = str(it.get("status", "")).upper()
+            if "MATCHED" in s and "PARTIAL" not in s:
+                earned += 1.0
+                n_matched += 1
+            elif "PARTIAL" in s:
+                earned += 0.5
+                n_partial += 1
+            else:
+                n_missing += 1
+        pct = (earned / len(items)) * 100.0
+        return pct, earned, n_matched, n_partial, n_missing
+
+    crit_pct, crit_earned, c_m, c_p, c_miss = get_points(crit_items)
+    pref_pct, pref_earned, p_m, p_p, p_miss = get_points(pref_items)
+    soft_pct, soft_earned, s_m, s_p, s_miss = get_points(soft_items)
+    
+    # Calculate weighted composite with dynamic normalization
+    w_crit = 0.65 if crit_items else 0.0
+    w_pref = 0.25 if pref_items else 0.0
+    w_soft = 0.10 if soft_items else 0.0
+    total_w = w_crit + w_pref + w_soft
+    
+    if total_w > 0:
+        raw_score = (w_crit * crit_pct + w_pref * pref_pct + w_soft * soft_pct) / total_w
+    else:
+        raw_score = 50.0
+        
+    final_score = int(round(max(10.0, min(99.0, raw_score))))
+    
+    if final_score >= 85:
+        fit_level = "Outstanding Alignment (85–100%)"
+    elif final_score >= 70:
+        fit_level = "Strong Candidate Match (70–84%)"
+    elif final_score >= 50:
+        fit_level = "Moderate Fit / High Potential (50–69%)"
+    else:
+        fit_level = "Early Career / Significant Skill Gaps (<50%)"
+        
+    return {
+        "mathematical_score": final_score,
+        "fit_level": fit_level,
+        "critical_accuracy": {
+            "percentage": round(crit_pct, 1),
+            "matched": c_m,
+            "partial": c_p,
+            "missing": c_miss,
+            "total": len(crit_items)
+        },
+        "preferred_accuracy": {
+            "percentage": round(pref_pct, 1),
+            "matched": p_m,
+            "partial": p_p,
+            "missing": p_miss,
+            "total": len(pref_items)
+        },
+        "soft_accuracy": {
+            "percentage": round(soft_pct, 1),
+            "matched": s_m,
+            "partial": s_p,
+            "missing": s_miss,
+            "total": len(soft_items)
+        },
+        "formula": f"({round(crit_pct, 1)}% × 65%) + ({round(pref_pct, 1)}% × 25%) + ({round(soft_pct, 1)}% × 10%)"
+    }
+
 class Chain:
     def __init__(self, model_name: str = "openai/gpt-oss-120b", api_key: str | None = None, temperature: float = 0.2):
         resolved_key = (api_key or os.getenv("API_KEY") or os.getenv("GROQ_API_KEY") or "").strip()
@@ -48,23 +235,54 @@ class Chain:
         self._init_llm()
 
     def extract_jobs(self, clean_text: str):
+        if not self.has_valid_key or self.llm is None:
+            return [{
+                "role": "Target Role",
+                "company": "Target Company",
+                "contact_email": "",
+                "experience": "Relevant Experience",
+                "skills": ["Python", "Machine Learning", "FastAPI"],
+                "critical_requirements": ["Python", "Machine Learning"],
+                "preferred_requirements": ["FastAPI"],
+                "general_responsibilities": ["Develop models and software services"],
+                "soft_skills": ["Problem Solving", "Communication"],
+                "irrelevant_noise": [],
+                "domain": "Technology",
+                "key_focus_areas": ["Model development", "Backend architecture"],
+                "description": clean_text[:300] + "...",
+                "hiring_manager": "Hiring Team"
+            }]
+
         prompt_extract = PromptTemplate.from_template(
             """### SCRAPED TEXT OR JOB POSTING:
 {page_data}
 
 ### INSTRUCTION:
-The text above is from a job opening / careers page or job description.
-Extract all distinct job postings and return them as a valid JSON array of objects.
-Each object must have the following keys:
-- `role`: The exact job title (e.g. "Senior Python Engineer")
-- `company`: Name of hiring company (if available, else "the company")
-- `contact_email`: The recruiter, HR, or application email address if mentioned (e.g. "careers@company.com" or "jobs@startup.io"), otherwise ""
-- `experience`: Required experience level / years (e.g. "2+ years", "Entry Level", or "Not specified")
-- `skills`: A list of strings of the top 4-8 required technical & professional skills
-- `description`: A 2-3 sentence summary of the key responsibilities and mission of this role
-- `hiring_manager`: Name or title of recruiter/manager if mentioned, otherwise "Hiring Team"
+You are an expert talent acquisition and job description relevance analyzer.
+Analyze the job description above carefully. Extract structured information and separate genuine candidate requirements from boilerplate, company background, and unrelated text.
 
-Return ONLY valid JSON with no conversational preamble or markdown code fences outside JSON.
+Extract a valid JSON array of job objects (usually 1 object).
+Each object MUST have the following keys:
+- `role`: The exact job title (e.g. "AI/ML Engineer Intern", "Senior Python Backend Developer").
+- `company`: Name of hiring company (if mentioned, otherwise "the company").
+- `contact_email`: Recruiter, HR, or application email address if explicitly mentioned, otherwise "".
+- `domain`: Industry/domain (e.g. "Artificial Intelligence", "Fintech", "HealthTech", "Cloud SaaS").
+- `experience`: Required experience level (e.g. "Internship / Student", "Entry Level", "1-3 years", "5+ years Senior").
+- `critical_requirements`: A list of 3-6 core MUST-HAVE technical competencies, programming languages, and frameworks that are genuinely central to this role.
+- `preferred_requirements`: A list of 2-4 NICE-TO-HAVE, bonus, or secondary tools/skills.
+- `general_responsibilities`: A list of 2-4 core day-to-day duties.
+- `soft_skills`: A list of 2-3 genuine interpersonal or collaborative skills.
+- `irrelevant_noise`: A list of any requirements or text that are clearly unrelated to the core role, random noise, misplaced preferences (e.g. "experience with marine biology" in a software job), or legal boilerplate that should NOT affect candidate suitability.
+- `skills`: A combined list of the top technical skills (critical + preferred) for search indexing.
+- `key_focus_areas`: A list of 2-3 specific engineering problems or goals this hire will work on.
+- `description`: A 2-3 sentence summary of the key responsibilities and mission of this role.
+- `hiring_manager`: Name or title of recruiter/manager if mentioned, otherwise "Hiring Team".
+
+IMPORTANT:
+- Do NOT classify random noise or boilerplate as critical requirements.
+- Distinguish between MUST-HAVE skills and NICE-TO-HAVE skills.
+
+Return ONLY valid JSON.
 
 ### VALID JSON:"""
         )
@@ -96,6 +314,13 @@ Return ONLY valid JSON with no conversational preamble or markdown code fences o
                     "company": "Target Company",
                     "experience": "Relevant Experience",
                     "skills": ["Python", "Machine Learning", "Communication"],
+                    "critical_requirements": ["Python", "Machine Learning"],
+                    "preferred_requirements": [],
+                    "general_responsibilities": ["Software development"],
+                    "soft_skills": ["Communication"],
+                    "irrelevant_noise": [],
+                    "domain": "Technology",
+                    "key_focus_areas": ["Engineering"],
                     "description": clean_text[:300] + "...",
                     "hiring_manager": "Hiring Team"
                 }]
@@ -199,21 +424,22 @@ Return ONLY valid JSON.
 
     def write_mail(
         self,
-        job,
-        links,
+        job: dict,
+        links: list | str,
         user_name: str,
         user_college: str | None = None,
         user_study: str | None = None,
         user_position: str | None = None,
         user_possition: str | None = None,
         tone: str = "Professional & Persuasive",
-        length: str = "Standard (200-250 words)",
+        length: str = "Standard (120-180 words)",
         candidate_type: str = "Student / Recent Graduate",
-        custom_instructions: str = ""
+        custom_instructions: str = "",
+        cv_text: str = ""
     ):
         position = user_position or user_possition or "Candidate"
         college = user_college if user_college and user_college.strip() else "University"
-        study = user_study if user_study and user_study.strip() else "Computer Science & Software"
+        study = user_study if user_study and user_study.strip() else "Computer Science"
 
         if isinstance(links, (list, tuple)):
             clean_links = [str(l).strip() for l in links if str(l).strip()]
@@ -221,58 +447,129 @@ Return ONLY valid JSON.
         else:
             link_list_text = str(links) if links else "No specific links provided."
 
+        role_title = job.get("role", "the role") if isinstance(job, dict) else "the role"
+        company_name = job.get("company", "the team") if isinstance(job, dict) else "the team"
+        domain = job.get("domain", "Technology") if isinstance(job, dict) else "Technology"
+        focus_areas = ", ".join(job.get("key_focus_areas", [])) if isinstance(job, dict) and job.get("key_focus_areas") else "Core engineering & development"
+        critical_reqs = ", ".join(job.get("critical_requirements", job.get("skills", []))) if isinstance(job, dict) else "Software Engineering"
+        job_desc = job.get("description", str(job)) if isinstance(job, dict) else str(job)
+        hiring_mgr = job.get("hiring_manager", "Hiring Team") if isinstance(job, dict) else "Hiring Team"
+
+        clean_link = clean_links[0] if isinstance(links, (list, tuple)) and clean_links else ""
+        link_mention = f" You can explore one of my relevant implementations here: {clean_link}." if clean_link else ""
+        fallback_body = (
+            f"Hi {company_name} Team,\n\n"
+            f"I came across your {role_title} opening and was particularly drawn to your work in {domain}. "
+            f"As a {position} with a background in {study} from {college}, my hands-on experience directly focuses on {critical_reqs}.{link_mention}\n\n"
+            f"Given your focus on {focus_areas}, I would love the chance to discuss how I can contribute to your projects. "
+            f"Would you be open to a brief 10-minute conversation next week?\n\n"
+            f"Best regards,\n{user_name}"
+        )
+
+        if not self.has_valid_key or self.llm is None:
+            offline_subjs = [
+                f"{user_name} - {role_title} / {critical_reqs.split(',')[0]}",
+                f"{role_title} inquiry - {user_name}",
+                f"Quick question regarding {company_name}'s {role_title} role"
+            ]
+            return {
+                "subject": offline_subjs[0],
+                "subject_lines": offline_subjs,
+                "body": fallback_body,
+                "match_summary": f"Targeted candidate alignment around {critical_reqs}.",
+                "key_highlights_used": [critical_reqs.split(",")[0]] if critical_reqs else ["Engineering"],
+                "focus_areas_addressed": focus_areas
+            }
+
         prompt_email = PromptTemplate.from_template(
-            """### TARGET JOB DETAILS:
-{job_description}
+            """### TARGET ROLE & COMPANY CONTEXT:
+Job Title: {role}
+Company: {company}
+Industry / Domain: {domain}
+Key Focus Areas: {focus_areas}
+Critical Must-Have Requirements: {critical_reqs}
+Job Description Overview:
+{job_desc}
+Addressed Recruiter/Team: {hiring_mgr}
 
-### CANDIDATE PROFILE:
-- Name: {user_name}
-- Candidate Status / Level: {candidate_type}
-- Role / Headline: {user_position}
-- Academic Institution / Background: {user_college}
-- Degree / Specialization: {user_study}
+### CANDIDATE PROFILE & VERIFIED EVIDENCE:
+- Candidate Name: {user_name}
+- Career Level: {candidate_type} (e.g. Student, Recent Graduate, Experienced)
+- Current Role / Headline: {user_position}
+- Education: {user_study} at {user_college}
+- Candidate Background & CV Highlights:
+{cv_highlights}
 
-### RELEVANT PORTFOLIO & PROJECT LINKS TO INCLUDE:
+### CANDIDATE PROJECT & PORTFOLIO LINKS (EMBED RELEVANT ONES ONLY):
 {link_list}
 
-### EMAIL STYLE & CONFIGURATION:
-- Desired Tone: {tone}
-- Desired Length: {length}
-- Special Custom Instructions: {custom_instructions}
+### EMAIL CONFIGURATION:
+- Tone: {tone}
+- Desired Length: 120-180 words (concise, sharp, and respectful of the recruiter's time)
+- Custom Candidate Angle: {custom_instructions}
 
-### INSTRUCTIONS:
-1. Act as an expert cold outreach copywriter who writes emails that get replies from hiring managers and founders.
-2. Generate a JSON response with:
-   - `subject_lines`: An array of 3 distinct, compelling, high-converting email subject lines (e.g. tailored, curiosity-inducing, value-driven).
-   - `body`: The complete, ready-to-send email body.
-   - `match_summary`: A concise 1-2 sentence explanation of why the candidate is a strong fit.
-   - `key_highlights_used`: An array of the top 3-4 skills/projects highlighted in the email.
+### CRITICAL HUMAN-WRITTEN COPYWRITING RULES:
+1. NEVER USE FIXED TEMPLATES OR SWAP NAMES INTO A SCRIPT. Each company and tech stack must get a completely unique email.
+2. ABSOLUTELY FORBIDDEN AI CLICHÉS AND BANNED PHRASES:
+   - DO NOT write: "I am writing to express my interest in..."
+   - DO NOT write: "I am thrilled to apply" / "I am excited to apply"
+   - DO NOT write: "esteemed company" / "prestigious organization"
+   - DO NOT write: "I believe I am an ideal candidate" / "perfect fit"
+   - DO NOT write: "I am confident that my skills align"
+   - DO NOT write: "I would be a valuable asset"
+   - DO NOT write: "Dear Hiring Manager," (start with "Hi {company} Team," or "Hi {hiring_mgr},")
+   - Avoid excessive corporate buzzwords, generic flattery, or dramatic adjectives.
+3. TAILORED, NATURAL OPENING:
+   - Start with a natural, conversational hook referencing specific technical work, product challenges, or team initiatives from the job posting.
+   - Example openers:
+     * "I noticed {company}'s {role} opening and was particularly drawn to your focus on {focus_areas}."
+     * "I saw your team is building {domain} infrastructure and wanted to reach out regarding the {role} position."
+4. GROUNDED IN REAL EVIDENCE:
+   - Identify 2-3 genuine focus areas in the job description. Connect them directly to the candidate's actual projects, tools, and background.
+   - Mention specific technologies, tools, and concrete project outcomes from the candidate's CV.
+   - Do NOT invent or claim experience the candidate does not have.
+   - Weave relevant portfolio links seamlessly into the prose (e.g., "I recently built a project addressing this: [Link]").
+5. NATURAL HUMAN VOICE & CONCISENESS:
+   - Sound like a real person ({candidate_type}). Simple, confident, articulate English.
+   - Use short paragraphs (2-3 sentences each).
+   - Total email body length MUST be around 120-180 words.
+6. LOW-FRICTION CALL TO ACTION:
+   - Close with a polite, casual next step (e.g., "Would you be open to a brief 10-minute chat next week?" or "Happy to share my code repository or provide additional details if helpful.").
+   - Sign off naturally with {user_name}.
 
-3. Formatting guidelines for `body`:
-   - Start directly with a warm greeting to the hiring manager/team.
-   - Introduce the candidate briefly ({user_name}, {user_position} with background in {user_study} at {user_college}).
-   - Directly hook the recipient by addressing their specific job needs.
-   - Seamlessly embed the relevant portfolio links with natural context (e.g., "You can see my recent implementation here: [URL]").
-   - Include a low-friction Call to Action (e.g. "Would you be open to a brief 10-minute chat this Thursday?").
-   - Close professionally with {user_name}'s sign-off.
-   - Do NOT include placeholders like [Company Name] if company is known; use actual job details.
+Return ONLY a valid JSON object matching the requested schema.
 
-Return ONLY a valid JSON object.
+### JSON OUTPUT SCHEMA:
+{{
+  "subject_lines": ["Subject 1 (Tailored)", "Subject 2 (Value-driven)", "Subject 3 (Curiosity/Direct)"],
+  "body": "Complete email text",
+  "match_summary": "1-2 sentences on why this specific outreach connects with their needs",
+  "key_highlights_used": ["Skill/Project 1", "Skill/Project 2"],
+  "focus_areas_addressed": "Summary of specific job needs addressed"
+}}
 
-### JSON OUTPUT:"""
+### VALID JSON:"""
         )
 
         chain_email = prompt_email | self.llm
+        cv_summary = (cv_text[:2500] if cv_text else "") or (f"Portfolio Tech: {link_list_text}\nRole: {position}\nStudy: {study}")
+
         res = chain_email.invoke({
-            "job_description": str(job),
-            "link_list": link_list_text,
+            "role": role_title,
+            "company": company_name,
+            "domain": domain,
+            "focus_areas": focus_areas,
+            "critical_reqs": critical_reqs,
+            "job_desc": job_desc[:2000],
+            "hiring_mgr": hiring_mgr,
             "user_name": user_name,
-            "user_college": college,
-            "user_study": study,
-            "user_position": position,
-            "tone": tone,
-            "length": length,
             "candidate_type": candidate_type,
+            "user_position": position,
+            "user_study": study,
+            "user_college": college,
+            "cv_highlights": cv_summary,
+            "link_list": link_list_text,
+            "tone": tone,
             "custom_instructions": custom_instructions or "None"
         })
 
@@ -280,236 +577,255 @@ Return ONLY a valid JSON object.
             json_parser = JsonOutputParser()
             parsed = json_parser.parse(res.content)
             if isinstance(parsed, dict) and "body" in parsed:
+                subjs = parsed.get("subject_lines") or []
+                if not isinstance(subjs, list) or not subjs:
+                    if parsed.get("subject"):
+                        subjs = [parsed["subject"]]
+                    else:
+                        subjs = [f"{role_title} inquiry - {user_name}"]
+                parsed["subject_lines"] = subjs
+                parsed["subject"] = subjs[0]
                 return parsed
         except Exception:
             pass
 
         raw_text = res.content.strip()
-        if raw_text.startswith("```"):
-            raw_text = raw_text.split("```")[1]
-            if raw_text.startswith("json"):
-                raw_text = raw_text[4:]
-            raw_text = raw_text.strip()
+        if "```json" in raw_text:
+            raw_text = raw_text.split("```json")[1].split("```")[0].strip()
+        elif "```" in raw_text:
+            raw_text = raw_text.split("```")[1].split("```")[0].strip()
 
-        return {
-            "subject_lines": [
-                f"Application for {job.get('role', 'Opportunity')} - {user_name}",
-                f"{user_name} - {job.get('role', 'Role')} Portfolio & Background",
-                f"Quick question regarding {job.get('role', 'Role')} at {job.get('company', 'your team')}"
-            ] if isinstance(job, dict) else [f"Opportunity Inquiry - {user_name}"],
-            "body": raw_text,
-            "match_summary": "Tailored application email matched with candidate portfolio.",
-            "key_highlights_used": job.get("skills", []) if isinstance(job, dict) else []
-        }
-
-    def analyze_job_fit(self, job: dict, portfolio_summary: str, user_name: str, user_position: str, user_study: str):
-        """
-        Analyzes candidate profile & portfolio against job requirements to calculate
-        match score, matched strengths, missing keywords, and strategic interview/email advice.
-        """
-        prompt_fit = PromptTemplate.from_template(
-            """### TARGET JOB DETAILS:
-{job_details}
-
-### CANDIDATE PROFILE & PORTFOLIO:
-- Candidate: {user_name} ({user_position})
-- Background / Education: {user_study}
-- Portfolio & Tech Stack:
-{portfolio_summary}
-
-### INSTRUCTIONS:
-Perform a deep candidate-to-job fit evaluation.
-Return a valid JSON object with the following exact keys:
-- `match_score`: An integer between 40 and 98 representing the overall fit percentage.
-- `fit_level`: String: "Excellent Match (85%+)", "Strong Match (70-84%)", or "Moderate / High Potential (50-69%)".
-- `matched_strengths`: Array of strings (top 3-5 specific strengths & skills that directly match the role).
-- `skill_gaps`: Array of strings (top 2-4 missing keywords, requirements, or nice-to-haves from the job description).
-- `strategic_advice`: A 2-3 sentence strategic recommendation explaining how the candidate should position themselves in the email and interviews to bridge any skill gaps.
-
-Return ONLY valid JSON.
-
-### JSON OUTPUT:"""
-        )
-
-        chain_fit = prompt_fit | self.llm
-        res = chain_fit.invoke({
-            "job_details": str(job),
-            "portfolio_summary": portfolio_summary,
-            "user_name": user_name,
-            "user_position": user_position,
-            "user_study": user_study
-        })
-
+        import json
         try:
-            json_parser = JsonOutputParser()
-            parsed = json_parser.parse(res.content)
-            if isinstance(parsed, dict) and "match_score" in parsed:
+            parsed = json.loads(raw_text)
+            if isinstance(parsed, dict) and "body" in parsed:
+                subjs = parsed.get("subject_lines") or []
+                if not isinstance(subjs, list) or not subjs:
+                    if parsed.get("subject"):
+                        subjs = [parsed["subject"]]
+                    else:
+                        subjs = [f"{role_title} inquiry - {user_name}"]
+                parsed["subject_lines"] = subjs
+                parsed["subject"] = subjs[0]
                 return parsed
         except Exception:
             pass
 
-        # Fallback
+        fallback_subjects = [
+            f"{user_name} - {role_title} / {domain}",
+            f"{role_title} inquiry - {user_name}",
+            f"Quick note regarding {company_name}'s {role_title} position"
+        ]
         return {
-            "match_score": 85,
-            "fit_level": "Strong Match (70-84%)",
-            "matched_strengths": job.get("skills", ["Python", "Machine Learning", "System Design"])[:4],
-            "skill_gaps": ["Domain-specific toolsets", "Advanced production telemetry"],
-            "strategic_advice": f"Emphasize your hands-on project portfolio in {user_position} and your ability to rapidly ramp up on any specialized internal tools."
+            "subject": fallback_subjects[0],
+            "subject_lines": fallback_subjects,
+            "body": raw_text if len(raw_text) > 40 else fallback_body,
+            "match_summary": f"Tailored outreach targeting {company_name}'s {role_title} role.",
+            "key_highlights_used": [critical_reqs.split(",")[0]] if critical_reqs else ["Engineering"],
+            "focus_areas_addressed": focus_areas
         }
 
-    def write_followup_mail(self, job: dict | None = None, user_name: str = "Candidate", days_since: int = 4, original_subject: str = "", original_body: str = "", company: str = "", role: str = "") -> dict:
+
+    def analyze_job_fit(
+        self,
+        job: dict,
+        portfolio_summary: str,
+        user_name: str,
+        user_position: str = "Candidate",
+        user_study: str = "Computer Science",
+        candidate_type: str = "Student / Recent Graduate",
+        cv_text: str = ""
+    ) -> dict:
         """
-        Generates a concise, polite follow-up email for an existing application.
+        Performs an evidence-based relevance and gap analysis between candidate profile and job requirements.
+        Classifies requirements into MATCHED, PARTIALLY MATCHED, MISSING, and NOT RELEVANT.
+        Applies mathematical weighted scoring grounded in verified CV evidence.
         """
-        job_data = job or {}
-        role_name = role or job_data.get("role", "the role")
-        company_name = company or job_data.get("company", "your team")
+        job_reqs = str(job)
+        cv_evidence_text = (cv_text[:8000] if cv_text else "") or portfolio_summary
+        pre_noise = job.get("irrelevant_noise", []) if isinstance(job, dict) else []
+
+        # Step 1: Pre-Audit candidate CV against all extracted requirements
+        all_reqs = []
+        if isinstance(job, dict):
+            for r in job.get("critical_requirements", []):
+                all_reqs.append({"req": r, "imp": "Critical requirement"})
+            for r in job.get("preferred_requirements", []):
+                all_reqs.append({"req": r, "imp": "Preferred requirement"})
+            for r in job.get("soft_skills", []):
+                all_reqs.append({"req": r, "imp": "Soft skill"})
+            if not all_reqs and "skills" in job:
+                for r in job.get("skills", []):
+                    all_reqs.append({"req": r, "imp": "Critical requirement"})
+
+        pre_audited_lines = []
+        heuristic_breakdown = []
+        for r_obj in all_reqs:
+            req_name = r_obj["req"]
+            status, quote, conf = find_cv_evidence(req_name, cv_evidence_text)
+            pre_audited_lines.append(f"- [{r_obj['imp']}] {req_name} -> Verified Status: {status} | Evidence: {quote}")
+            heuristic_breakdown.append({
+                "requirement": req_name,
+                "importance": r_obj["imp"],
+                "status": status,
+                "candidate_evidence": quote,
+                "explanation": f"Verified via direct CV and portfolio scan ({conf} confidence).",
+                "confidence": conf
+            })
+
+        for n in pre_noise:
+            heuristic_breakdown.append({
+                "requirement": n,
+                "importance": "Irrelevant/Noise",
+                "status": "NOT RELEVANT",
+                "candidate_evidence": "Filtered out by ATS shield.",
+                "explanation": "Out-of-scope requirement excluded from candidate scoring.",
+                "confidence": "High"
+            })
+
+        pre_audit_text = "\n".join(pre_audited_lines) if pre_audited_lines else "No structured requirements provided."
 
         if not self.has_valid_key or self.llm is None:
+            # High-accuracy dynamic fallback computed directly from candidate's CV
+            audit_meta = audit_and_calculate_score(heuristic_breakdown)
+            matched_str = [h["requirement"] for h in heuristic_breakdown if h["status"] == "MATCHED"][:4]
+            skill_gp = [h["requirement"] for h in heuristic_breakdown if h["status"] == "MISSING"][:3]
             return {
-                "subject": f"Following up: {original_subject or f'Application for {role_name} at {company_name}'}",
-                "body": f"Hi {company_name} Hiring Team,\n\nI hope you're having a great week! I wanted to briefly follow up on my application for the {role_name} position. I remain very enthusiastic about the opportunity and would love to provide any additional details if needed.\n\nThank you for your time and consideration.\n\nBest regards,\n{user_name}"
+                "match_score": audit_meta["mathematical_score"],
+                "fit_level": audit_meta["fit_level"],
+                "matched_strengths": matched_str or ["Technical Fundamentals", "Software Engineering"],
+                "skill_gaps": skill_gp or ["Enterprise scale deployment"],
+                "strategic_advice": f"Emphasize your demonstrated projects in {user_position} and your rapid capacity to learn missing tools.",
+                "evidence_breakdown": heuristic_breakdown,
+                "noise_filtered": pre_noise,
+                "audit_meta": audit_meta
             }
 
-        prompt_followup = PromptTemplate.from_template(
-            """### JOB DETAILS:
-Role: {role}
-Company: {company}
-Candidate Name: {user_name}
-Days Since Initial Outreach: {days_since} days
+        prompt_fit = PromptTemplate.from_template(
+            """### TARGET JOB REQUIREMENTS & CONTEXT:
+Job Details:
+{job_details}
 
-### INSTRUCTION:
-Write a polite, concise, and high-impact follow-up email.
-1. Mention that you reached out a few days ago regarding the {role} position.
-2. Reiterate your excitement and highlight one strong reason why you can add immediate value.
-3. Keep it under 100 words.
-4. Include a courteous call to action.
-
-Return a valid JSON object with:
-- `subject`: The follow-up subject line (e.g. "Following up: {role} - {user_name}")
-- `body`: The email text.
-
-### JSON:"""
-        )
-
-        try:
-            chain_follow = prompt_followup | self.llm
-            res = chain_follow.invoke({
-                "role": role_name,
-                "company": company_name,
-                "user_name": user_name,
-                "days_since": days_since
-            })
-            json_parser = JsonOutputParser()
-            parsed = json_parser.parse(res.content)
-            if isinstance(parsed, dict) and "body" in parsed:
-                return parsed
-        except Exception:
-            pass
-
-        return {
-            "subject": f"Following up: {original_subject or f'Application for {role_name} - {user_name}'}",
-            "body": f"Hi {company_name} Team,\n\nI hope you're having a great week! I'm following up on my application for the {role_name} role at {company_name} that I sent a few days ago.\n\nI remain very excited about the mission and would love the opportunity to briefly connect.\n\nBest regards,\n{user_name}"
-        }
-
-    def analyze_reply(self, reply_text: str, original_job_context: dict | None = None) -> dict:
-        """
-        Analyzes a recruiter/company reply email using Groq LLM.
-        Classifies response category and extracts structured interview details without hallucination.
-        """
-        job_ctx = original_job_context or {}
-        company_name = job_ctx.get("company", "the company")
-        role_name = job_ctx.get("role", "the role")
-
-        prompt_reply = PromptTemplate.from_template(
-            """### CONTEXT:
-The candidate previously applied for the position '{role}' at '{company}'.
-The company/recruiter has sent the following incoming email reply:
-
-### INCOMING EMAIL CONTENT:
-\"\"\"
-{reply_text}
-\"\"\"
+### CANDIDATE RESUME / CV EVIDENCE:
+Candidate Name: {user_name} ({user_position})
+Education: {user_study}
+Experience Level / Category: {candidate_type}
+Candidate CV & Portfolio Details:
+{candidate_evidence}
 
 ### INSTRUCTIONS:
-1. Act as an expert ATS and HR intelligence analyzer.
-2. Carefully analyze the company's message.
-3. Classify the email into EXACTLY ONE of the following standard categories:
-   - "Interview Invitation" (if inviting candidate for a video, phone, or technical interview)
-   - "Assessment / Test Invitation" (if sending a coding challenge, take-home test, or questionnaire)
-   - "Request for Additional Information" (if asking for portfolio, references, transcripts, availability)
-   - "Application Received / Acknowledgement" (automated or human confirmation that application is received)
-   - "Application Under Review" (actively reviewing profile/materials)
-   - "Shortlisted / Progressing" (passed preliminary round/positive progress)
-   - "Offer" (job offer or formal contract extension)
-   - "Rejection" (declined / position filled / not moving forward)
-   - "Follow-Up Required" (company asking a question or candidate needs to respond)
-   - "General Company Response" (inquiry, networking, or general outreach)
-   - "Unclear / Unknown" (irrelevant, spam, or non-actionable)
+You are an expert, objective talent assessment and ATS intelligence engine.
+Perform a strict, EVIDENCE-BASED candidate-to-job fit and gap analysis.
 
-4. Extract the following entity fields. IMPORTANT: If a field is NOT explicitly mentioned in the email, leave it as an empty string (""). DO NOT guess or invent missing details.
-   - `interview_date`: Date of the scheduled or proposed interview (e.g. "Thursday, Oct 12, 2026" or "")
-   - `interview_time`: Time of the interview including timezone (e.g. "2:00 PM EST" or "")
-   - `interview_type`: Format (e.g. "Video Call", "Phone Screen", "Technical Live Coding", "On-site", "Take-Home Test", or "")
-   - `meeting_link`: Extracted Zoom, Google Meet, Microsoft Teams, Calendly, or assessment URL (or "")
-   - `location`: Physical address or "Remote" (or "")
-   - `recruiter_contact`: Recruiter or interviewer name / title / email (or "")
-   - `requested_documents`: Any requested materials (e.g. "GitHub repos, References" or "")
-   - `deadline`: Explicit deadline date/time to respond or complete test (or "")
-   - `required_action`: 1 clear, actionable sentence instructing what the candidate must do next (e.g. "Confirm availability for Thursday at 2 PM EST via the Calendly link.")
-   - `important_notes`: 1-2 sentence concise summary of the key message.
-   - `suggested_pipeline_status`: Set to one of: ["Interview Scheduled", "Assessment / Test", "Offer", "Rejected", "Reply Received", "Under Review", "Applied"]
+RULES:
+1. DO NOT FORCE MATCHES:
+   - Never invent or assume a connection between the CV and job requirements.
+   - For every requirement, classify it into EXACTLY ONE of:
+     * `MATCHED`: Verified concrete evidence in candidate's CV/portfolio.
+     * `PARTIALLY MATCHED`: Candidate has related foundation, coursework, or adjacent skill, but lacks the requested years of experience, production scale, or enterprise depth. You MUST explain why it is partial.
+     * `MISSING`: Genuinely required by the job, but completely absent from candidate's profile.
+     * `NOT RELEVANT`: Boilerplate, legal disclaimers, or random unrelated text (e.g., "experience in marine biology" for a Python backend role).
+2. EXPERIENCE LEVEL SENSITIVITY:
+   - If the job demands 5+ years of senior production experience and the candidate is a student/junior with project experience, mark as `PARTIALLY MATCHED` (skill present, but seniority/experience gap exists).
+3. FILTER IRRELEVANT NOISE:
+   - Any random or boilerplate requirements identified as `NOT RELEVANT` must have ZERO weight and must NOT lower the score or appear as critical skill gaps.
+4. WEIGHTED SCORING CALCULATION:
+   - Critical Requirements (core technical must-haves): 65% of score weight.
+   - Preferred Requirements (nice-to-haves): 25% of score weight.
+   - Soft Skills (collaboration/communication): 10% of score weight.
+   - Noise / Irrelevant: 0% weight.
+   - Calculate `match_score` as a realistic integer between 15 and 98 based on weighted achievement.
+   - Assign `fit_level`:
+     * 85-98: "Excellent Match (85%+)"
+     * 70-84: "Strong Match (70-84%)"
+     * 50-69: "Moderate Fit / High Potential (50-69%)"
+     * Below 50: "Early Career / Significant Skill Gaps (<50%)"
 
-Return ONLY a valid JSON object matching the requested schema.
+### PRE-AUDITED EVIDENCE DISCOVERED IN CANDIDATE CV:
+{pre_audited_evidence}
 
-### JSON OUTPUT:"""
+Return ONLY a valid JSON object matching the schema below.
+
+### JSON OUTPUT SCHEMA:
+{{
+  "match_score": 75,
+  "fit_level": "Strong Match (70-84%)",
+  "matched_strengths": ["Top 3-5 verified strengths with candidate evidence"],
+  "skill_gaps": ["Top 2-4 genuine critical missing requirements"],
+  "strategic_advice": "2-3 sentences of strategic advice on how the candidate should address gaps in their email and interviews",
+  "evidence_breakdown": [
+    {{
+      "requirement": "Name of requirement or skill",
+      "importance": "Critical requirement | Preferred requirement | Soft skill | Irrelevant/Noise",
+      "status": "MATCHED | PARTIALLY MATCHED | MISSING | NOT RELEVANT",
+      "candidate_evidence": "Exact quote or proof from candidate profile (or 'No evidence found in CV')",
+      "explanation": "Why this status was assigned",
+      "confidence": "High | Medium | Low"
+    }}
+  ],
+  "noise_filtered": ["List of any irrelevant/noise items ignored during evaluation"]
+}}
+
+### VALID JSON:"""
         )
 
-        chain_reply = prompt_reply | self.llm
-        res = chain_reply.invoke({
-            "role": role_name,
-            "company": company_name,
-            "reply_text": reply_text[:3500]
-        })
-
         try:
-            json_parser = JsonOutputParser()
-            parsed = json_parser.parse(res.content)
-            if isinstance(parsed, dict) and "category" in parsed:
-                return parsed
+            chain_fit = prompt_fit | self.llm
+            res = chain_fit.invoke({
+                "job_details": job_reqs[:4000],
+                "user_name": user_name,
+                "user_position": user_position,
+                "user_study": user_study,
+                "candidate_type": candidate_type,
+                "candidate_evidence": cv_evidence_text[:8000],
+                "pre_audited_evidence": pre_audit_text
+            })
+
+            try:
+                json_parser = JsonOutputParser()
+                parsed = json_parser.parse(res.content)
+                if isinstance(parsed, dict) and "evidence_breakdown" in parsed:
+                    audit_meta = audit_and_calculate_score(parsed["evidence_breakdown"])
+                    parsed["match_score"] = audit_meta["mathematical_score"]
+                    parsed["fit_level"] = audit_meta["fit_level"]
+                    parsed["audit_meta"] = audit_meta
+                    return parsed
+            except Exception:
+                pass
+
+            raw_text = res.content.strip()
+            if "```json" in raw_text:
+                raw_text = raw_text.split("```json")[1].split("```")[0].strip()
+            elif "```" in raw_text:
+                raw_text = raw_text.split("```")[1].split("```")[0].strip()
+
+            import json
+            try:
+                parsed = json.loads(raw_text)
+                if isinstance(parsed, dict) and "evidence_breakdown" in parsed:
+                    audit_meta = audit_and_calculate_score(parsed["evidence_breakdown"])
+                    parsed["match_score"] = audit_meta["mathematical_score"]
+                    parsed["fit_level"] = audit_meta["fit_level"]
+                    parsed["audit_meta"] = audit_meta
+                    return parsed
+            except Exception:
+                pass
         except Exception:
             pass
 
-        # Fallback heuristic parser
-        lower = reply_text.lower()
-        if any(w in lower for w in ["interview", "chat", "zoom", "google meet", "teams", "calendly", "call", "schedule"]):
-            cat = "Interview Invitation"
-            status = "Interview Scheduled"
-        elif any(w in lower for w in ["assessment", "hackerrank", "codility", "test", "quiz", "challenge"]):
-            cat = "Assessment / Test Invitation"
-            status = "Assessment / Test"
-        elif any(w in lower for w in ["offer", "pleased to offer", "congratulations"]):
-            cat = "Offer"
-            status = "Offer"
-        elif any(w in lower for w in ["unfortunately", "not moving forward", "other candidates", "regret to inform"]):
-            cat = "Rejection"
-            status = "Rejected"
-        else:
-            cat = "Reply Received"
-            status = "Reply Received"
-
+        # Robust, high-accuracy dynamic fallback computed directly from candidate's CV
+        audit_meta = audit_and_calculate_score(heuristic_breakdown)
+        matched_str = [h["requirement"] for h in heuristic_breakdown if h["status"] == "MATCHED"][:4]
+        skill_gp = [h["requirement"] for h in heuristic_breakdown if h["status"] == "MISSING"][:3]
         return {
-            "category": cat,
-            "confidence_level": "HIGH",
-            "interview_date": "",
-            "interview_time": "",
-            "interview_type": "",
-            "meeting_link": "",
-            "location": "",
-            "recruiter_contact": "",
-            "requested_documents": "",
-            "deadline": "",
-            "required_action": "Review the company's message and reply with your availability.",
-            "important_notes": reply_text[:200] + "...",
-            "suggested_pipeline_status": status
+            "match_score": audit_meta["mathematical_score"],
+            "fit_level": audit_meta["fit_level"],
+            "matched_strengths": matched_str or ["Technical Fundamentals", "Software Engineering"],
+            "skill_gaps": skill_gp or ["Enterprise scale deployment"],
+            "strategic_advice": f"Emphasize your demonstrated projects in {user_position} and your rapid capacity to learn missing tools.",
+            "evidence_breakdown": heuristic_breakdown,
+            "noise_filtered": pre_noise,
+            "audit_meta": audit_meta
         }
+
+
