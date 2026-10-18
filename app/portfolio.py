@@ -1,15 +1,48 @@
 import os
+import re
 import pandas as pd
 import uuid
 import chromadb
 
 DEFAULT_VECTORSTORE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "data", "vectorstore"))
 
+def sanitize_collection_name(user_id: int | str | None, base_name: str = "portfolio") -> str:
+    """
+    Constructs a safe, validated ChromaDB collection name isolated per authenticated user ID.
+    Enforces ChromaDB collection naming rules:
+    - 3-63 characters
+    - Starts and ends with an alphanumeric character
+    - Contains only alphanumeric characters, underscores, or hyphens
+    - Avoids unvalidated raw input strings
+    """
+    if user_id is None or str(user_id).strip() == "":
+        return "user_portfolio"
+    
+    # Strip any non-alphanumeric characters except underscores and hyphens
+    clean_id = re.sub(r'[^a-zA-Z0-9_-]', '_', str(user_id).strip())
+    # Ensure it starts with alphanumeric
+    col_name = f"user_{clean_id}_{base_name}"
+    # Truncate to maximum 63 characters if needed
+    col_name = col_name[:63].rstrip('_-')
+    if len(col_name) < 3:
+        col_name = f"user_{col_name}_pf"
+    return col_name
+
 class Portfolio:
     """
-    Manages vector storage and semantic retrieval for candidate portfolio items and project links.
+    Manages vector storage and semantic retrieval for candidate portfolio items and project links
+    with strict multi-user tenant isolation.
     """
-    def __init__(self, file_path=None, collection_name="user_portfolio", data=None, persist_directory=None):
+    def __init__(
+        self,
+        file_path=None,
+        collection_name=None,
+        data=None,
+        persist_directory=None,
+        user_id: int | str | None = None
+    ):
+        self.user_id = user_id
+
         if data is not None:
             if isinstance(data, pd.DataFrame):
                 self.data = data.copy()
@@ -32,36 +65,63 @@ class Portfolio:
             self.persist_directory = persist_directory if os.path.isabs(persist_directory) else os.path.abspath(os.path.join(os.path.dirname(__file__), persist_directory))
             
         os.makedirs(self.persist_directory, exist_ok=True)
-        self.collection_name = collection_name
+
+        # Multi-user collection isolation:
+        # If user_id is provided, derive an isolated collection name unique to this user.
+        if collection_name and collection_name != "user_portfolio":
+            self.collection_name = collection_name
+        else:
+            self.collection_name = sanitize_collection_name(user_id)
+
         self.client = chromadb.PersistentClient(path=self.persist_directory)
-        self.collection = self.client.get_or_create_collection(name=self.collection_name)
+        
+        # Safely obtain or create isolated collection
+        try:
+            self.collection = self.client.get_or_create_collection(
+                name=self.collection_name,
+                metadata={"hnsw:space": "cosine"}
+            )
+        except Exception:
+            # Fallback for legacy database configurations
+            self.collection = self.client.get_or_create_collection(name=self.collection_name)
 
     def load_portfolio(self, clear_existing: bool = True):
         """
         Loads the candidate portfolio data into ChromaDB.
-        Clears existing items if clear_existing is True to ensure freshness across uploads.
+        When clear_existing is True, ONLY clears records belonging to this specific user's collection,
+        guaranteeing that other users' portfolio data is never deleted or affected.
         """
         if self.data is None or self.data.empty:
             return
 
         if clear_existing and self.collection.count() > 0:
             try:
-                # Delete existing collection and recreate to clear stale data
-                self.client.delete_collection(name=self.collection_name)
-                self.collection = self.client.get_or_create_collection(name=self.collection_name)
+                # Delete only this user's records by ID or clean recreation of this user's collection
+                existing = self.collection.get()
+                if existing and existing.get("ids"):
+                    self.collection.delete(ids=existing["ids"])
             except Exception:
-                pass
+                try:
+                    self.client.delete_collection(name=self.collection_name)
+                    self.collection = self.client.get_or_create_collection(name=self.collection_name)
+                except Exception:
+                    pass
 
         documents = []
         metadatas = []
         ids = []
+        user_tag = str(self.user_id) if self.user_id is not None else "shared"
 
         for _, row in self.data.iterrows():
             techstack = str(row.get("Techstack", "")).strip()
             links = str(row.get("Links", "")).strip()
-            if techstack and links:
+            if techstack:
                 documents.append(techstack)
-                metadatas.append({"Links": links, "Techstack": techstack})
+                metadatas.append({
+                    "Links": links,
+                    "Techstack": techstack,
+                    "user_id": user_tag
+                })
                 ids.append(str(uuid.uuid4()))
 
         if documents:
@@ -71,12 +131,12 @@ class Portfolio:
                 ids=ids
             )
 
-    def query_links(self, skills, n_results: int = 3):
+    def query_links(self, skills, n_results: int = 3) -> list[str]:
         """
         Queries ChromaDB for links matching the job's requested skills.
+        Enforces user isolation at both collection level and query metadata level.
         """
         if not skills or self.collection.count() == 0:
-            # If no embeddings or skills, return all available links in the dataset up to n_results
             if self.data is not None and not self.data.empty and "Links" in self.data.columns:
                 return [l for l in self.data["Links"].dropna().unique() if str(l).strip()][:n_results]
             return []
@@ -89,14 +149,16 @@ class Portfolio:
         if not query_texts:
             return []
 
-        # Chroma query limit cannot exceed collection count
         count = self.collection.count()
         actual_n = min(n_results, count)
 
         try:
+            # Dual-layer isolation: query within user's isolated collection
+            where_clause = {"user_id": str(self.user_id)} if self.user_id is not None else None
             results = self.collection.query(
                 query_texts=query_texts,
-                n_results=actual_n
+                n_results=actual_n,
+                where=where_clause
             )
             links = []
             seen = set()
@@ -109,7 +171,7 @@ class Portfolio:
                             links.append(link_val)
             return links
         except Exception:
-            # Fallback to dataset links
+            # Fallback to in-memory dataset links
             if self.data is not None and not self.data.empty and "Links" in self.data.columns:
                 return [l for l in self.data["Links"].dropna().unique() if str(l).strip()][:n_results]
             return []

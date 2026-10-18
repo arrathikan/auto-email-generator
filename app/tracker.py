@@ -4,26 +4,138 @@ import hashlib
 import json
 import secrets
 from datetime import datetime
+from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError, VerificationError, InvalidHashError
+from cryptography.fernet import Fernet, InvalidToken
 
 DB_DIR = os.path.join(os.path.dirname(__file__), "data")
 os.makedirs(DB_DIR, exist_ok=True)
 DB_PATH = os.path.join(DB_DIR, "tracker.db")
+
+# Initialize Argon2id password hasher (RFC 9106 recommended parameters)
+_password_hasher = PasswordHasher(
+    time_cost=2,
+    memory_cost=65536,  # 64 MB
+    parallelism=1,
+    hash_len=32,
+    salt_len=16
+)
+
+# Prefix used to distinguish authenticated encrypted credentials from legacy plaintext
+ENCRYPTION_PREFIX = "enc_v1:"
 
 def get_connection():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
-def hash_password(password: str, salt: str | None = None) -> tuple[str, str]:
-    if not salt:
-        salt = secrets.token_hex(16)
-    salted = password + salt
-    pwd_hash = hashlib.sha256(salted.encode("utf-8")).hexdigest()
-    return pwd_hash, salt
+# --- SMTP Encryption Key Management ---
+def _get_encryption_cipher() -> Fernet:
+    """
+    Retrieves or initializes the authenticated Fernet encryption key.
+    Security rules:
+    - The key is NEVER stored in the tracker.db database.
+    - First checks environment variables (ENCRYPTION_KEY or SMTP_SECRET_KEY).
+    - If absent from environment, loads from a protected local key file (.smtp_secret.key).
+    - If neither exists, generates a fresh Fernet key and saves it to .smtp_secret.key with 0600 permissions.
+    """
+    key_str = (os.getenv("ENCRYPTION_KEY") or os.getenv("SMTP_SECRET_KEY") or "").strip()
+    if not key_str:
+        key_file = os.path.join(DB_DIR, ".smtp_secret.key")
+        if os.path.exists(key_file):
+            try:
+                with open(key_file, "rb") as f:
+                    key_str = f.read().decode("utf-8").strip()
+            except Exception:
+                pass
 
-def verify_password(password: str, stored_hash: str, salt: str) -> bool:
-    pwd_hash, _ = hash_password(password, salt)
-    return pwd_hash == stored_hash
+        if not key_str:
+            new_key = Fernet.generate_key()
+            try:
+                with open(key_file, "wb") as f:
+                    f.write(new_key)
+                os.chmod(key_file, 0o600)
+            except Exception:
+                pass
+            key_str = new_key.decode("utf-8")
+
+    return Fernet(key_str.encode("utf-8"))
+
+def encrypt_smtp_password(plaintext: str) -> str:
+    """
+    Encrypts an SMTP App Password using authenticated Fernet (AES-128-CBC + HMAC-SHA256).
+    Returns ciphertext prefixed with 'enc_v1:'.
+    """
+    if not plaintext:
+        return ""
+    if plaintext.startswith(ENCRYPTION_PREFIX):
+        return plaintext  # Already encrypted
+    cipher = _get_encryption_cipher()
+    encrypted = cipher.encrypt(plaintext.encode("utf-8"))
+    return f"{ENCRYPTION_PREFIX}{encrypted.decode('utf-8')}"
+
+def decrypt_smtp_password(stored_val: str) -> str:
+    """
+    Decrypts an encrypted SMTP password. If the stored value is legacy plaintext,
+    it returns the plaintext directly so callers can transparently migrate it.
+    """
+    if not stored_val:
+        return ""
+    if not stored_val.startswith(ENCRYPTION_PREFIX):
+        return stored_val  # Legacy plaintext, return as-is for migration
+
+    try:
+        cipher = _get_encryption_cipher()
+        token = stored_val[len(ENCRYPTION_PREFIX):].encode("utf-8")
+        decrypted = cipher.decrypt(token)
+        return decrypted.decode("utf-8")
+    except (InvalidToken, Exception):
+        # Never leak ciphertext or key details on decryption error
+        return ""
+
+# --- Password Hashing API ---
+def hash_password(password: str, salt: str | None = None) -> tuple[str, str]:
+    """
+    Hashes a password using Argon2id.
+    Returns (argon2_hash, "").
+    The salt parameter is preserved for backwards compatibility with legacy call signatures.
+    """
+    pwd_hash = _password_hasher.hash(password)
+    return pwd_hash, ""
+
+def verify_password(password: str, stored_hash: str, salt: str = "") -> bool:
+    """
+    Verifies a password against either a modern Argon2id hash or a legacy salted SHA-256 hash.
+    Constant-time comparison is enforced for legacy verification.
+    """
+    if not stored_hash or not password:
+        return False
+
+    # 1. Modern Argon2id hash
+    if stored_hash.startswith("$argon2"):
+        try:
+            return _password_hasher.verify(stored_hash, password)
+        except (VerifyMismatchError, VerificationError, InvalidHashError):
+            return False
+
+    # 2. Legacy salted SHA-256 fallback
+    try:
+        legacy_salted = password + (salt or "")
+        legacy_hash = hashlib.sha256(legacy_salted.encode("utf-8")).hexdigest()
+        return secrets.compare_digest(legacy_hash, stored_hash)
+    except Exception:
+        return False
+
+def check_needs_rehash(stored_hash: str) -> bool:
+    """
+    Returns True if the hash is a legacy SHA-256 hash or an outdated Argon2 parameter format.
+    """
+    if not stored_hash or not stored_hash.startswith("$argon2"):
+        return True
+    try:
+        return _password_hasher.check_needs_rehash(stored_hash)
+    except Exception:
+        return True
 
 def init_db():
     with get_connection() as conn:
@@ -87,6 +199,7 @@ def register_user(username: str, email_addr: str, password: str) -> tuple[bool, 
     if "@" not in email_addr:
         return False, "Please provide a valid email address.", None
 
+    # Hash with Argon2id
     pwd_hash, salt = hash_password(password)
     
     try:
@@ -133,7 +246,22 @@ def authenticate_user(username: str, password: str) -> tuple[bool, str, dict | N
         if not user:
             return False, "We couldn't sign you in with those details. Check your email and password and try again.", None
             
-        if verify_password(password, user["password_hash"], user["salt"]):
+        stored_hash = user["password_hash"]
+        salt = user["salt"] or ""
+
+        if verify_password(password, stored_hash, salt):
+            # Automatic rehash & migration on successful login
+            if check_needs_rehash(stored_hash):
+                try:
+                    new_hash, _ = hash_password(password)
+                    cursor.execute(
+                        "UPDATE users SET password_hash = ?, salt = '' WHERE id = ?",
+                        (new_hash, user["id"])
+                    )
+                    conn.commit()
+                except Exception:
+                    pass  # Non-blocking rehash failure
+
             return True, "Login successful!", {
                 "id": user["id"],
                 "username": user["username"],
@@ -194,12 +322,32 @@ def save_user_profile(
         conn.commit()
 
 def get_user_mail_config(user_id: int) -> dict:
+    """
+    Retrieves SMTP settings for user.
+    Transparently decrypts encrypted app_password and migrates legacy plaintext credentials to ciphertext.
+    """
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM user_mail_configs WHERE user_id = ?", (user_id,))
         row = cursor.fetchone()
         if row:
-            return dict(row)
+            d = dict(row)
+            stored_pwd = d.get("app_password", "")
+            if stored_pwd and not stored_pwd.startswith(ENCRYPTION_PREFIX):
+                # Legacy plaintext password detected: silently migrate to authenticated encryption
+                try:
+                    encrypted_pwd = encrypt_smtp_password(stored_pwd)
+                    cursor.execute(
+                        "UPDATE user_mail_configs SET app_password = ? WHERE user_id = ?",
+                        (encrypted_pwd, user_id)
+                    )
+                    conn.commit()
+                except Exception:
+                    pass
+                d["app_password"] = stored_pwd
+            elif stored_pwd:
+                d["app_password"] = decrypt_smtp_password(stored_pwd)
+            return d
         return {}
 
 def save_user_mail_config(
@@ -209,6 +357,13 @@ def save_user_mail_config(
     smtp_host: str = "",
     smtp_port: int = 465
 ):
+    """
+    Saves SMTP settings with authenticated encryption for app_password.
+    Never stores app_password in plaintext.
+    """
+    # Encrypt password before storing if a non-empty password is provided
+    stored_password = encrypt_smtp_password(app_password) if app_password else ""
+
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -220,5 +375,5 @@ def save_user_mail_config(
             smtp_host = CASE WHEN excluded.smtp_host != '' THEN excluded.smtp_host ELSE user_mail_configs.smtp_host END,
             smtp_port = excluded.smtp_port,
             updated_at = CURRENT_TIMESTAMP
-        """, (user_id, email_address, app_password, smtp_host, smtp_port))
+        """, (user_id, email_address, stored_password, smtp_host, smtp_port))
         conn.commit()

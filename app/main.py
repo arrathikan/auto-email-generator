@@ -630,26 +630,13 @@ def clean_text(text: str) -> str:
     return text.strip()
 
 def extract_text_from_file(uploaded_file) -> str:
-    filename = uploaded_file.name.lower()
-    raw_text = ""
-    if filename.endswith(".pdf"):
-        reader = PdfReader(uploaded_file)
-        for page in reader.pages:
-            t = page.extract_text()
-            if t:
-                raw_text += t + "\n"
-    elif filename.endswith(".docx") or filename.endswith(".doc"):
-        if docx is None:
-            raise NotImplementedError("python-docx is required for Word document parsing.")
-        doc = docx.Document(uploaded_file)
-        paragraphs = [p.text for p in doc.paragraphs if p.text]
-        raw_text = "\n".join(paragraphs)
-    elif filename.endswith(".csv"):
-        df = pd.read_csv(uploaded_file)
-        raw_text = df.to_string()
-    else:
-        raw_text = uploaded_file.read().decode("utf-8", errors="ignore")
-    return raw_text.strip()
+    from cv_parser import extract_text_from_cv, CVExtractionError
+    try:
+        return extract_text_from_cv(uploaded_file)
+    except CVExtractionError as e:
+        raise ValueError(str(e))
+    except Exception as e:
+        raise ValueError(f"Failed to read CV: {str(e)}")
 
 def process_cv_to_dataframe(uploaded_file, chain: Chain) -> pd.DataFrame:
     if uploaded_file.name.lower().endswith(".csv"):
@@ -1062,14 +1049,11 @@ def get_current_job_text() -> tuple[str, str | None]:
         url = st.session_state.get("job_url", "").strip()
         if not url:
             return "", "Please enter a valid job posting URL."
-        try:
-            loader = WebBaseLoader([url])
-            docs = loader.load()
-            if not docs or not docs[0].page_content.strip():
-                return "", "Could not extract text from the provided URL. Please try pasting the job description directly."
-            return clean_text(docs[0].page_content), None
-        except Exception as e:
-            return "", f"Scraping error: {str(e)}. Please paste the job description directly."
+        from job_loader import extract_job_posting_text
+        text, err = extract_job_posting_text(url)
+        if err:
+            return "", err
+        return clean_text(text), None
 
 # ---------------------------------------------------------
 # Sidebar Navigation & Settings
@@ -1387,6 +1371,30 @@ elif st.session_state.current_page == "profile":
         save_current_user_profile()
         st.toast("Profile saved successfully.", icon="✅")
 
+    st.markdown("<hr style='margin: 1.5rem 0; border-color: rgba(255,255,255,0.06);'>", unsafe_allow_html=True)
+    with st.expander("🔐 SMTP Email Settings & Direct Dispatch (Encrypted)"):
+        st.caption("Store your email credentials securely using authenticated encryption (AES-128-CBC + HMAC-SHA256). Passwords are never stored in plaintext.")
+        mail_cfg = tracker.get_user_mail_config(user_id)
+        c_smtp1, c_smtp2 = st.columns(2)
+        with c_smtp1:
+            smtp_user = st.text_input("Sender Email Address", value=mail_cfg.get("email_address", current_user.get("email", "")), key="smtp_email_input")
+            smtp_host = st.text_input("SMTP Host (leave blank to auto-detect)", value=mail_cfg.get("smtp_host", ""), placeholder="e.g. smtp.gmail.com", key="smtp_host_input")
+        with c_smtp2:
+            has_pwd = bool(mail_cfg.get("app_password"))
+            pwd_placeholder = "•••••••••••••••• (Leave blank to keep existing)" if has_pwd else "Enter 16-character App Password"
+            new_smtp_pwd = st.text_input("App Password", type="password", placeholder=pwd_placeholder, key="smtp_pwd_input", help="For Gmail, create an App Password in your Google Account security settings.")
+            smtp_port = st.number_input("SMTP Port", value=int(mail_cfg.get("smtp_port") or 465), step=1, key="smtp_port_input")
+
+        if st.button("Save Encrypted SMTP Credentials", key="btn_save_smtp"):
+            tracker.save_user_mail_config(
+                user_id=user_id,
+                email_address=smtp_user,
+                app_password=new_smtp_pwd,
+                smtp_host=smtp_host,
+                smtp_port=smtp_port
+            )
+            st.toast("SMTP credentials encrypted and saved successfully.", icon="🔐")
+
     st.markdown('</div>', unsafe_allow_html=True)
 
 # =========================================================
@@ -1675,7 +1683,7 @@ elif st.session_state.current_page == "email":
         if draft_clicked or not st.session_state.generated_results:
             with st.spinner("Drafting personalized application email..."):
                 try:
-                    portfolio_instance = Portfolio(data=st.session_state.portfolio_df) if st.session_state.portfolio_df is not None else None
+                    portfolio_instance = Portfolio(data=st.session_state.portfolio_df, user_id=user_id) if st.session_state.portfolio_df is not None else None
                     if portfolio_instance:
                         portfolio_instance.load_portfolio(clear_existing=True)
 
@@ -1848,5 +1856,22 @@ elif st.session_state.current_page == "email":
                     mime="message/rfc822",
                     use_container_width=True
                 )
+
+            # Direct SMTP Dispatch option
+            st.markdown("<div style='height: 8px;'></div>", unsafe_allow_html=True)
+            if st.button("🚀 Send Directly via Configured SMTP", use_container_width=True):
+                with st.spinner("Connecting securely to SMTP server and dispatching..."):
+                    send_res = mailer.send_email_smtp(
+                        user_id=user_id,
+                        recipient_email=st.session_state.recipient_email,
+                        subject=chosen_subject,
+                        body_text=final_email_content,
+                        cv_path=st.session_state.cv_file_path
+                    )
+                    if send_res.get("success"):
+                        st.toast("Email dispatched successfully via SMTP!", icon="🚀")
+                        st.success("Email sent successfully via SMTP with CV attachment.")
+                    else:
+                        st.error(send_res.get("error", "Failed to dispatch email."))
 
         st.markdown('</div>', unsafe_allow_html=True)

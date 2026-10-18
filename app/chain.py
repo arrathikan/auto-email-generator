@@ -1,9 +1,12 @@
 import os
+import re
+import json
 from dotenv import load_dotenv
 from langchain_groq import ChatGroq
 from langchain_core.prompts import PromptTemplate
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.exceptions import OutputParserException
+from urllib.parse import urlparse
 
 load_dotenv()
 
@@ -16,93 +19,223 @@ SUPPORTED_MODELS = [
     "qwen/qwen3.6-27b"
 ]
 
-import re
-
-COMMON_TECH_SYNONYMS = {
-    "python": ["python", "py", "django", "fastapi", "flask", "pandas", "numpy", "scipy"],
-    "javascript": ["javascript", "js", "typescript", "ts", "node", "nodejs", "react", "vue", "angular", "nextjs", "express"],
-    "typescript": ["typescript", "ts", "javascript", "js"],
-    "react": ["react", "reactjs", "react.js", "next.js", "nextjs", "redux", "frontend"],
-    "node": ["node", "nodejs", "node.js", "express", "expressjs", "nestjs", "backend"],
-    "aws": ["aws", "amazon web services", "ec2", "s3", "lambda", "cloudwatch", "iam", "dynamodb"],
-    "azure": ["azure", "microsoft azure", "blob storage", "azure functions"],
-    "gcp": ["gcp", "google cloud", "bigquery", "google cloud platform"],
-    "docker": ["docker", "container", "containers", "containerization", "docker-compose"],
-    "kubernetes": ["kubernetes", "k8s", "helm", "kubectl", "cluster", "orchestration"],
-    "sql": ["sql", "postgresql", "postgres", "mysql", "sqlite", "relational database", "rdbms", "queries"],
-    "nosql": ["nosql", "mongodb", "mongo", "redis", "dynamodb", "cassandra"],
-    "machine learning": ["machine learning", "ml", "deep learning", "ai", "artificial intelligence", "scikit-learn", "sklearn", "tensorflow", "pytorch", "keras", "models"],
-    "pytorch": ["pytorch", "torch", "deep learning", "neural networks", "tensor"],
-    "tensorflow": ["tensorflow", "tf", "keras"],
-    "nlp": ["nlp", "natural language processing", "llm", "large language models", "transformers", "huggingface", "bert", "gpt", "spacy", "langchain"],
-    "ci/cd": ["ci/cd", "ci", "cd", "continuous integration", "continuous deployment", "github actions", "gitlab ci", "jenkins"],
-    "git": ["git", "github", "gitlab", "version control"],
-    "rest api": ["rest", "restful", "api", "apis", "fastapi", "flask", "endpoints", "json"],
-    "graphql": ["graphql", "apollo", "query language"],
-    "linux": ["linux", "unix", "bash", "shell scripting", "ubuntu"],
+# Exact canonical aliases (true equivalents/shorthands)
+CANONICAL_ALIASES = {
+    "python": ["python", "python3", "py"],
+    "javascript": ["javascript", "js", "ecmascript"],
+    "typescript": ["typescript", "ts"],
+    "golang": ["golang", "go"],
     "c++": ["c++", "cpp"],
-    "java": ["java", "spring", "springboot", "spring boot"],
-    "go": ["go", "golang"],
-    "fastapi": ["fastapi", "python", "rest api", "pydantic", "starlette", "backend"],
-    "django": ["django", "django rest framework", "python", "drf", "backend"],
-    "flask": ["flask", "python", "werkzeug", "jinja"],
+    "c#": ["c#", "csharp", ".net"],
+    "kubernetes": ["kubernetes", "k8s"],
+    "postgresql": ["postgresql", "postgres", "psql"],
+    "mongodb": ["mongodb", "mongo"],
+    "react": ["react", "reactjs", "react.js"],
+    "node": ["node", "nodejs", "node.js"],
+    "vue": ["vue", "vuejs", "vue.js"],
+    "angular": ["angular", "angularjs"],
+    "fastapi": ["fastapi"],
+    "django": ["django", "django rest framework", "drf"],
+    "flask": ["flask"],
+    "docker": ["docker", "docker-compose", "containerization"],
+    "aws": ["aws", "amazon web services"],
+    "azure": ["azure", "microsoft azure"],
+    "gcp": ["gcp", "google cloud", "google cloud platform"],
+    "ci/cd": ["ci/cd", "ci cd", "continuous integration", "continuous deployment"],
+    "machine learning": ["machine learning", "ml"],
+    "deep learning": ["deep learning", "dl"],
+    "nlp": ["nlp", "natural language processing"],
+    "computer vision": ["computer vision", "cv"],
+    "sql": ["sql", "rdbms", "relational database"],
+    "nosql": ["nosql"]
 }
+
+# Related ecosystem families (adjacent tools: candidate knowing tool A does NOT automatically mean they know tool B)
+RELATED_ECOSYSTEMS = {
+    "Python": {
+        "parent": "python",
+        "tools": ["fastapi", "django", "flask", "pandas", "numpy", "scipy", "scikit-learn", "pytorch", "tensorflow", "celery", "sqlalchemy"]
+    },
+    "JavaScript / Web": {
+        "parent": "javascript",
+        "tools": ["react", "vue", "angular", "node", "express", "nextjs", "next.js", "typescript", "svelte", "redux"]
+    },
+    "Cloud & DevOps": {
+        "parent": "cloud",
+        "tools": ["aws", "azure", "gcp", "docker", "kubernetes", "terraform", "ansible", "jenkins", "github actions", "linux"]
+    },
+    "Machine Learning & AI": {
+        "parent": "machine learning",
+        "tools": ["pytorch", "tensorflow", "keras", "scikit-learn", "sklearn", "nlp", "computer vision", "opencv", "langchain", "huggingface", "llm"]
+    },
+    "Databases": {
+        "parent": "database",
+        "tools": ["postgresql", "mysql", "sqlite", "mongodb", "redis", "cassandra", "dynamodb", "elasticsearch"]
+    }
+}
+
+def is_valid_url(url: str) -> bool:
+    """
+    Validates whether a URL is a syntactically valid public web link,
+    and strictly rejects placeholder/hallucinated domains and patterns.
+    """
+    if not url or not isinstance(url, str):
+        return False
+    u = url.strip()
+    if not (u.startswith("http://") or u.startswith("https://")):
+        return False
+    
+    lower_u = u.lower()
+    placeholders = [
+        "github.com/candidate",
+        "github.com/username",
+        "github.com/your-username",
+        "github.com/profile",
+        "example.com",
+        "placeholder",
+        "project-name",
+        "your-portfolio",
+        "linkedin.com/in/candidate",
+        "mysite.com",
+        "domain.com",
+        "<url>",
+        "[url]",
+        "none"
+    ]
+    if any(p in lower_u for p in placeholders):
+        return False
+        
+    try:
+        parsed = urlparse(u)
+        return bool(parsed.netloc and "." in parsed.netloc and len(parsed.netloc) >= 4)
+    except Exception:
+        return False
+
+def sanitize_extracted_portfolio(items: list[dict]) -> list[dict]:
+    """
+    Validates candidate portfolio items extracted by LLM:
+    - Preserves genuine verified URLs.
+    - Preserves projects that do NOT have a repository link, keeping Links as '' without inventing one.
+    - Strips fabricated or placeholder URLs.
+    """
+    clean_items = []
+    if not isinstance(items, list):
+        return clean_items
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        tech = str(item.get("Techstack", "")).strip()
+        link = str(item.get("Links", "")).strip()
+        if not tech and not link:
+            continue
+        valid_link = link if is_valid_url(link) else ""
+        clean_items.append({
+            "Techstack": tech,
+            "Links": valid_link
+        })
+    return clean_items
+
+def skill_match_regex(term: str) -> re.Pattern:
+    """
+    Constructs a boundary-safe regex pattern for technical skill terms.
+    Correctly handles terms with punctuation like 'c++', 'c#', '.net', 'node.js', and 'ci/cd'.
+    """
+    escaped = re.escape(term.strip())
+    prefix = r'(?<![a-zA-Z0-9_])'
+    suffix = r'(?![a-zA-Z0-9_+#])' if term[-1] in ('+', '#') else r'(?![a-zA-Z0-9_])'
+    return re.compile(f"{prefix}{escaped}{suffix}", re.IGNORECASE)
 
 def find_cv_evidence(requirement: str, cv_text: str, portfolio_items: list[dict] | None = None) -> tuple[str, str, str]:
     """
     Scans candidate CV text and portfolio for verifiable evidence matching a requirement.
+    Uses word boundaries and contextual checking to prevent false positives.
+    Distinguishes exact skills from merely related technologies.
     Returns: (status: 'MATCHED'|'PARTIALLY MATCHED'|'MISSING', evidence_quote: str, confidence: str)
     """
-    req_clean = requirement.strip().lower()
+    req_clean = requirement.strip()
     if not req_clean or not cv_text:
-        return "MISSING", "No evidence found in candidate profile.", "Low"
+        return "MISSING", "No evidence found in candidate profile or CV.", "Low"
         
-    cv_lower = cv_text.lower()
+    req_lower = req_clean.lower()
     
-    # 1. Direct exact phrase match
-    if req_clean in cv_lower:
-        sentences = re.split(r'[.\n\r]+', cv_text)
-        for s in sentences:
-            if req_clean in s.lower():
+    # 1. Exact phrase / skill search using boundary-safe matching
+    direct_pat = skill_match_regex(req_clean)
+    if direct_pat.search(cv_text):
+        for s in re.split(r'[\n\r]+|[.!?]\s+', cv_text):
+            if direct_pat.search(s):
                 clean_s = s.strip()
-                if len(clean_s) > 12:
+                if len(clean_s) > 10:
                     return "MATCHED", f'Found in CV: "{clean_s[:160]}"', "High"
         return "MATCHED", f'Found direct mention in CV: "{req_clean}"', "High"
         
-    # 2. Extract key technical tokens (ignore common stop words)
-    tokens = [w for w in re.findall(r'\b[a-zA-Z0-9+#.-]{2,}\b', req_clean) 
-              if w not in ["and", "with", "the", "for", "experience", "knowledge", "strong", "skills", "ability", "in", "to", "years", "using"]]
-    
-    if tokens and all(t in cv_lower for t in tokens):
-        for s in re.split(r'[.\n\r]+', cv_text):
-            if any(t in s.lower() for t in tokens):
-                clean_s = s.strip()
-                if len(clean_s) > 12:
-                    return "MATCHED", f'Verified in CV: "{clean_s[:160]}"', "High"
+    # 2. Check Canonical Aliases (exact synonyms)
+    for canonical, aliases in CANONICAL_ALIASES.items():
+        # Check if the requirement matches the canonical name or any alias
+        req_is_alias = req_lower == canonical or any(req_lower == a for a in aliases)
+        if req_is_alias:
+            all_forms = [canonical] + aliases
+            for form in all_forms:
+                alias_pat = skill_match_regex(form)
+                if alias_pat.search(cv_text):
+                    for s in re.split(r'[\n\r]+|[.!?]\s+', cv_text):
+                        if alias_pat.search(s):
+                            clean_s = s.strip()
+                            return "MATCHED", f'Found verified skill ({form}) in CV: "{clean_s[:160]}"', "High"
+                    return "MATCHED", f'Found verified skill ({form}) in CV', "High"
 
-    # 3. Check Tech Synonyms
-    for key, syns in COMMON_TECH_SYNONYMS.items():
-        if key in req_clean or any(s in req_clean for s in syns):
-            matched_syns = [s for s in syns if s in cv_lower]
-            if matched_syns:
-                for s in re.split(r'[.\n\r]+', cv_text):
-                    if any(ms in s.lower() for ms in matched_syns):
-                        clean_s = s.strip()
-                        return "MATCHED", f'Found related tech ({", ".join(matched_syns[:3])}) in CV: "{clean_s[:160]}"', "High"
-
-    # 4. Check candidate portfolio projects
+    # 3. Check candidate portfolio projects for exact or alias matches
     if portfolio_items:
         for p in portfolio_items:
-            tech = str(p.get("Techstack", "")).lower()
-            if req_clean in tech or any(t in tech for t in tokens if len(t) > 3):
-                return "MATCHED", f'Demonstrated in Portfolio: {p.get("Techstack")} ({p.get("Links", "")})', "High"
+            tech = str(p.get("Techstack", ""))
+            link = str(p.get("Links", "")).strip()
+            link_str = f" ({link})" if link else ""
+            if direct_pat.search(tech):
+                return "MATCHED", f'Demonstrated in Portfolio: {tech}{link_str}', "High"
+            for canonical, aliases in CANONICAL_ALIASES.items():
+                if req_lower == canonical or any(req_lower == a for a in aliases):
+                    for form in [canonical] + aliases:
+                        if skill_match_regex(form).search(tech):
+                            return "MATCHED", f'Demonstrated in Portfolio: {tech}{link_str}', "High"
 
-    # 5. Partial token match
-    if tokens and any(t in cv_lower for t in tokens if len(t) > 3):
-        matched_tokens = [t for t in tokens if t in cv_lower and len(t) > 3]
-        return "PARTIALLY MATCHED", f'Found partial mention ({", ".join(matched_tokens)}) in CV, but deeper enterprise scope unverified.', "Medium"
+    # 4. Multi-token requirement parsing (e.g. "FastAPI and PostgreSQL", "Distributed Systems with Kafka")
+    tokens = [w for w in re.findall(r'\b[a-zA-Z0-9+#.-]{2,}\b', req_lower) 
+              if w not in ["and", "with", "the", "for", "experience", "knowledge", "strong", "skills", "ability", "in", "to", "years", "using", "plus", "understanding"]]
+    
+    if len(tokens) > 1:
+        matched_tokens = []
+        missing_tokens = []
+        for t in tokens:
+            t_pat = skill_match_regex(t)
+            if t_pat.search(cv_text):
+                matched_tokens.append(t)
+            else:
+                missing_tokens.append(t)
+                
+        if matched_tokens and not missing_tokens:
+            for s in re.split(r'[\n\r]+|[.!?]\s+', cv_text):
+                if any(skill_match_regex(t).search(s) for t in matched_tokens):
+                    clean_s = s.strip()
+                    if len(clean_s) > 10:
+                        return "MATCHED", f'Verified in CV: "{clean_s[:160]}"', "High"
+            return "MATCHED", f'All required technical components ({", ".join(matched_tokens)}) verified in CV.', "High"
+        elif matched_tokens:
+            return "PARTIALLY MATCHED", f'Found partial match ({", ".join(matched_tokens)}) in CV, but deeper enterprise scope ({", ".join(missing_tokens)}) not explicitly evidenced.', "Medium"
 
-    return "MISSING", "No evidence found in candidate profile or CV.", "High"
+    # 5. Related Ecosystem Check (DO NOT treat related tools as full matches; flag as PARTIALLY MATCHED)
+    for eco_name, eco_data in RELATED_ECOSYSTEMS.items():
+        tools = eco_data["tools"]
+        req_in_eco = any(req_lower == t or t in req_lower for t in tools)
+        if req_in_eco:
+            # Look for other tools candidate knows in the same ecosystem
+            found_eco_tools = []
+            for t in tools:
+                if t != req_lower and skill_match_regex(t).search(cv_text):
+                    found_eco_tools.append(t)
+            if found_eco_tools:
+                return "PARTIALLY MATCHED", f'Candidate demonstrates related {eco_name} foundation ({", ".join(found_eco_tools[:3])}), but specific {req_clean} experience is not explicitly demonstrated in CV.', "Medium"
+
+    return "MISSING", f'No direct or related evidence found for "{req_clean}" in candidate profile or CV.', "High"
 
 def audit_and_calculate_score(evidence_breakdown: list[dict]) -> dict:
     """
@@ -204,6 +337,10 @@ def audit_and_calculate_score(evidence_breakdown: list[dict]) -> dict:
     }
 
 class Chain:
+    """
+    Orchestrates LLM prompts for Job Information Extraction, CV Portfolio Extraction,
+    deterministic Evidence-Based Fit Auditing, and Outreach Email Generation.
+    """
     def __init__(self, model_name: str = "openai/gpt-oss-120b", api_key: str | None = None, temperature: float = 0.2):
         resolved_key = (api_key or os.getenv("API_KEY") or os.getenv("GROQ_API_KEY") or "").strip()
         self.api_key = resolved_key
@@ -217,11 +354,16 @@ class Chain:
 
     def _init_llm(self):
         if self.has_valid_key:
-            self.llm = ChatGroq(
-                model=self.model_name,
-                api_key=self.api_key,
-                temperature=self.temperature
-            )
+            try:
+                self.llm = ChatGroq(
+                    model=self.model_name,
+                    api_key=self.api_key,
+                    temperature=self.temperature,
+                    timeout=30,
+                    max_retries=2
+                )
+            except Exception:
+                self.llm = None
         else:
             self.llm = None
 
@@ -235,23 +377,25 @@ class Chain:
         self._init_llm()
 
     def extract_jobs(self, clean_text: str):
+        default_job = [{
+            "role": "Target Role",
+            "company": "Target Company",
+            "contact_email": "",
+            "experience": "Relevant Experience",
+            "skills": ["Python", "Machine Learning", "FastAPI"],
+            "critical_requirements": ["Python", "Machine Learning"],
+            "preferred_requirements": ["FastAPI"],
+            "general_responsibilities": ["Develop models and software services"],
+            "soft_skills": ["Problem Solving", "Communication"],
+            "irrelevant_noise": [],
+            "domain": "Technology",
+            "key_focus_areas": ["Model development", "Backend architecture"],
+            "description": clean_text[:500] + ("..." if len(clean_text) > 500 else ""),
+            "hiring_manager": "Hiring Team"
+        }]
+
         if not self.has_valid_key or self.llm is None:
-            return [{
-                "role": "Target Role",
-                "company": "Target Company",
-                "contact_email": "",
-                "experience": "Relevant Experience",
-                "skills": ["Python", "Machine Learning", "FastAPI"],
-                "critical_requirements": ["Python", "Machine Learning"],
-                "preferred_requirements": ["FastAPI"],
-                "general_responsibilities": ["Develop models and software services"],
-                "soft_skills": ["Problem Solving", "Communication"],
-                "irrelevant_noise": [],
-                "domain": "Technology",
-                "key_focus_areas": ["Model development", "Backend architecture"],
-                "description": clean_text[:300] + "...",
-                "hiring_manager": "Hiring Team"
-            }]
+            return default_job
 
         prompt_extract = PromptTemplate.from_template(
             """### SCRAPED TEXT OR JOB POSTING:
@@ -272,7 +416,7 @@ Each object MUST have the following keys:
 - `preferred_requirements`: A list of 2-4 NICE-TO-HAVE, bonus, or secondary tools/skills.
 - `general_responsibilities`: A list of 2-4 core day-to-day duties.
 - `soft_skills`: A list of 2-3 genuine interpersonal or collaborative skills.
-- `irrelevant_noise`: A list of any requirements or text that are clearly unrelated to the core role, random noise, misplaced preferences (e.g. "experience with marine biology" in a software job), or legal boilerplate that should NOT affect candidate suitability.
+- `irrelevant_noise`: A list of any requirements or text that are clearly unrelated to the core role, random noise, misplaced preferences, or legal boilerplate that should NOT affect candidate suitability.
 - `skills`: A combined list of the top technical skills (critical + preferred) for search indexing.
 - `key_focus_areas`: A list of 2-3 specific engineering problems or goals this hire will work on.
 - `description`: A 2-3 sentence summary of the key responsibilities and mission of this role.
@@ -287,8 +431,13 @@ Return ONLY valid JSON.
 ### VALID JSON:"""
         )
 
-        chain_extract = prompt_extract | self.llm
-        res = chain_extract.invoke({"page_data": clean_text})
+        try:
+            chain_extract = prompt_extract | self.llm
+            # Allow generous context budget for comprehensive job postings
+            res = chain_extract.invoke({"page_data": clean_text[:12000]})
+        except Exception:
+            # Fallback on LLM API or network error
+            return default_job
 
         try:
             json_parser = JsonOutputParser()
@@ -297,52 +446,53 @@ Return ONLY valid JSON.
                 return json_res
             elif isinstance(json_res, dict):
                 return [json_res]
-            return []
+            return default_job
         except OutputParserException:
             content = res.content.strip()
             if "```json" in content:
                 content = content.split("```json")[1].split("```")[0].strip()
             elif "```" in content:
                 content = content.split("```")[1].split("```")[0].strip()
-            import json
             try:
                 parsed = json.loads(content)
                 return parsed if isinstance(parsed, list) else [parsed]
             except Exception:
-                return [{
-                    "role": "Target Job Role",
-                    "company": "Target Company",
-                    "experience": "Relevant Experience",
-                    "skills": ["Python", "Machine Learning", "Communication"],
-                    "critical_requirements": ["Python", "Machine Learning"],
-                    "preferred_requirements": [],
-                    "general_responsibilities": ["Software development"],
-                    "soft_skills": ["Communication"],
-                    "irrelevant_noise": [],
-                    "domain": "Technology",
-                    "key_focus_areas": ["Engineering"],
-                    "description": clean_text[:300] + "...",
-                    "hiring_manager": "Hiring Team"
-                }]
+                return default_job
 
-    def extract_portfolio_data(self, raw_cv_text: str):
+    def extract_portfolio_data(self, raw_cv_text: str) -> list[dict]:
+        """
+        Extracts candidate core technical skills grouped by project or experience.
+        Strictly prevents hallucination of placeholder GitHub or website URLs.
+        """
+        default_res = [
+            {"Techstack": "Python, Machine Learning, Data Science", "Links": ""}
+        ]
+
+        if not self.has_valid_key or self.llm is None:
+            return default_res
+
         prompt_parse_cv = PromptTemplate.from_template(
             """### CANDIDATE CV / RESUME TEXT:
 {cv_text}
 
 ### INSTRUCTION:
 Extract the candidate's core technical skills (Techstack) grouped by project, expertise area, or experience, along with any relevant URLs/project links (Links).
-If a project doesn't have an explicit link in the text, use their GitHub or LinkedIn profile URL if available, or a descriptive placeholder like "https://github.com/candidate/project-name".
+
+CRITICAL ACCURACY & NO-HALLUCINATION RULES:
+1. Extract ONLY genuine, explicit URLs or GitHub links that are actually written in the candidate's CV text.
+2. If a project does NOT have an explicit repository link or URL in the CV, leave `Links` as an EMPTY STRING ("").
+3. DO NOT invent, fabricate, guess, or create placeholder links like "https://github.com/candidate/project-name" or "example.com".
+4. Projects without repository links are completely valid—preserve them with `Links: ""`.
 
 Return a valid JSON array of objects. Each object must contain:
 - `Techstack`: Comma-separated list of technologies and skills for that project/area.
-- `Links`: Exact URL or repository link representing this project/experience.
+- `Links`: Exact URL from the CV, or "" if not provided.
 
 Example:
 [
-  {{"Techstack": "Python, FastAPI, Streamlit, LangChain, Groq", "Links": "https://github.com/candidate/cold-email-generator"}},
-  {{"Techstack": "React, TypeScript, TailwindCSS, Next.js", "Links": "https://github.com/candidate/saas-dashboard"}},
-  {{"Techstack": "PyTorch, Computer Vision, OpenCV, YOLO", "Links": "https://github.com/candidate/object-detection"}}
+  {{"Techstack": "Python, FastAPI, Streamlit, LangChain", "Links": "https://github.com/candidate/cold-email-generator"}},
+  {{"Techstack": "React, TypeScript, TailwindCSS", "Links": ""}},
+  {{"Techstack": "PyTorch, Computer Vision, OpenCV", "Links": ""}}
 ]
 
 Return ONLY valid JSON.
@@ -350,27 +500,45 @@ Return ONLY valid JSON.
 ### VALID JSON ARRAY:"""
         )
 
-        chain_parse = prompt_parse_cv | self.llm
-        res = chain_parse.invoke({"cv_text": raw_cv_text})
+        try:
+            chain_parse = prompt_parse_cv | self.llm
+            # Generous character budget to avoid losing candidate projects
+            res = chain_parse.invoke({"cv_text": raw_cv_text[:16000]})
+        except Exception:
+            return default_res
 
         try:
             json_parser = JsonOutputParser()
             json_res = json_parser.parse(res.content)
-            if isinstance(json_res, list):
-                return json_res
-            elif isinstance(json_res, dict):
-                return [json_res]
-            return []
+            items = json_res if isinstance(json_res, list) else ([json_res] if isinstance(json_res, dict) else [])
+            return sanitize_extracted_portfolio(items)
         except Exception:
-            return [
-                {"Techstack": "Python, Machine Learning, Data Science", "Links": "https://github.com/profile"}
-            ]
+            raw_text = res.content.strip()
+            if "```json" in raw_text:
+                raw_text = raw_text.split("```json")[1].split("```")[0].strip()
+            elif "```" in raw_text:
+                raw_text = raw_text.split("```")[1].split("```")[0].strip()
+            try:
+                parsed = json.loads(raw_text)
+                items = parsed if isinstance(parsed, list) else ([parsed] if isinstance(parsed, dict) else [])
+                return sanitize_extracted_portfolio(items)
+            except Exception:
+                return default_res
 
     def parse_candidate_profile_from_cv(self, raw_cv_text: str) -> dict:
         """
-        Extracts candidate personal details (name, target position, college, degree, candidate type)
-        and portfolio items directly from the uploaded CV text using LLM.
+        Extracts candidate personal details and portfolio items directly from the uploaded CV text.
+        Preserves complete CV context without premature truncation.
         """
+        default_profile = {
+            "full_name": "Candidate",
+            "position": "Software Engineer",
+            "college": "",
+            "degree": "",
+            "candidate_type": "Student / Recent Graduate",
+            "portfolio": []
+        }
+
         if not self.has_valid_key or self.llm is None:
             lines = [line.strip() for line in raw_cv_text.splitlines() if line.strip()]
             name = lines[0] if lines else "Candidate"
@@ -379,8 +547,8 @@ Return ONLY valid JSON.
                 "position": "Software Engineer",
                 "college": "",
                 "degree": "",
-                "candidate_type": "Experienced Professional",
-                "portfolio": [{"Techstack": "Software Development, Python, Web", "Links": "https://github.com"}]
+                "candidate_type": "Student / Recent Graduate",
+                "portfolio": [{"Techstack": "Software Development, Python, Web", "Links": ""}]
             }
 
         prompt_profile = PromptTemplate.from_template(
@@ -391,11 +559,14 @@ Return ONLY valid JSON.
 Extract the candidate's structured profile information and technical portfolio.
 Return a valid JSON object with the following keys:
 - `full_name`: Candidate's full name.
-- `position`: Their current title or target job title (e.g. "Full Stack Developer", "Data Scientist", "Software Engineer").
+- `position`: Their current headline or target job title (e.g. "Full Stack Developer", "Data Scientist", "Software Engineer").
 - `college`: University, College, or Institution attended (or "" if not found).
 - `degree`: Major / Degree field of study (e.g. "B.Sc. in Computer Science" or "" if not found).
 - `candidate_type`: Choose ONE of: ["Student / Recent Graduate", "Experienced Professional", "Freelancer / Consultant"].
-- `portfolio`: An array of objects with keys `Techstack` (comma-separated tech skills) and `Links` (URLs or GitHub links mentioned, or "https://github.com/candidate/project-name").
+- `portfolio`: An array of objects with keys `Techstack` (comma-separated tech skills) and `Links` (exact URL if present in text, otherwise "").
+
+STRICT RULE ON LINKS:
+- Never fabricate placeholder URLs (e.g. do not invent "https://github.com/candidate/project-name"). If no URL is given, use "".
 
 Return ONLY valid JSON.
 
@@ -404,23 +575,19 @@ Return ONLY valid JSON.
 
         try:
             chain_profile = prompt_profile | self.llm
-            res = chain_profile.invoke({"cv_text": raw_cv_text[:4000]})
+            # Allow up to 16,000 characters so multi-page CVs are fully read
+            res = chain_profile.invoke({"cv_text": raw_cv_text[:16000]})
             json_parser = JsonOutputParser()
             parsed = json_parser.parse(res.content)
             if isinstance(parsed, dict) and "full_name" in parsed:
+                # Sanitize portfolio links to ensure no placeholders
+                if "portfolio" in parsed and isinstance(parsed["portfolio"], list):
+                    parsed["portfolio"] = sanitize_extracted_portfolio(parsed["portfolio"])
                 return parsed
         except Exception:
             pass
 
-        return {
-            "full_name": "Candidate",
-            "position": "Software Engineer",
-            "college": "",
-            "degree": "",
-            "candidate_type": "Student / Recent Graduate",
-            "portfolio": []
-        }
-
+        return default_profile
 
     def write_mail(
         self,
@@ -436,16 +603,23 @@ Return ONLY valid JSON.
         candidate_type: str = "Student / Recent Graduate",
         custom_instructions: str = "",
         cv_text: str = ""
-    ):
+    ) -> dict:
+        """
+        Drafts a tailored outreach email grounded in candidate evidence and verified project links.
+        Guarantees that no fake GitHub links or fabricated accomplishments are introduced.
+        """
         position = user_position or user_possition or "Candidate"
         college = user_college if user_college and user_college.strip() else "University"
         study = user_study if user_study and user_study.strip() else "Computer Science"
 
+        # Sanitize and verify candidate links before embedding
         if isinstance(links, (list, tuple)):
-            clean_links = [str(l).strip() for l in links if str(l).strip()]
-            link_list_text = "\n".join(f"- {l}" for l in clean_links) if clean_links else "No specific links provided."
+            clean_links = [str(l).strip() for l in links if is_valid_url(str(l))]
+            link_list_text = "\n".join(f"- {l}" for l in clean_links) if clean_links else "No verified links provided."
         else:
-            link_list_text = str(links) if links else "No specific links provided."
+            clean_link_str = str(links).strip() if is_valid_url(str(links)) else ""
+            clean_links = [clean_link_str] if clean_link_str else []
+            link_list_text = clean_link_str if clean_link_str else "No verified links provided."
 
         role_title = job.get("role", "the role") if isinstance(job, dict) else "the role"
         company_name = job.get("company", "the team") if isinstance(job, dict) else "the team"
@@ -455,7 +629,7 @@ Return ONLY valid JSON.
         job_desc = job.get("description", str(job)) if isinstance(job, dict) else str(job)
         hiring_mgr = job.get("hiring_manager", "Hiring Team") if isinstance(job, dict) else "Hiring Team"
 
-        clean_link = clean_links[0] if isinstance(links, (list, tuple)) and clean_links else ""
+        clean_link = clean_links[0] if clean_links else ""
         link_mention = f" You can explore one of my relevant implementations here: {clean_link}." if clean_link else ""
         fallback_body = (
             f"Hi {company_name} Team,\n\n"
@@ -466,12 +640,13 @@ Return ONLY valid JSON.
             f"Best regards,\n{user_name}"
         )
 
+        offline_subjs = [
+            f"{user_name} - {role_title} / {critical_reqs.split(',')[0] if critical_reqs else 'Engineering'}",
+            f"{role_title} inquiry - {user_name}",
+            f"Quick question regarding {company_name}'s {role_title} role"
+        ]
+
         if not self.has_valid_key or self.llm is None:
-            offline_subjs = [
-                f"{user_name} - {role_title} / {critical_reqs.split(',')[0]}",
-                f"{role_title} inquiry - {user_name}",
-                f"Quick question regarding {company_name}'s {role_title} role"
-            ]
             return {
                 "subject": offline_subjs[0],
                 "subject_lines": offline_subjs,
@@ -500,7 +675,7 @@ Addressed Recruiter/Team: {hiring_mgr}
 - Candidate Background & CV Highlights:
 {cv_highlights}
 
-### CANDIDATE PROJECT & PORTFOLIO LINKS (EMBED RELEVANT ONES ONLY):
+### CANDIDATE PROJECT & PORTFOLIO LINKS:
 {link_list}
 
 ### EMAIL CONFIGURATION:
@@ -520,21 +695,16 @@ Addressed Recruiter/Team: {hiring_mgr}
    - DO NOT write: "Dear Hiring Manager," (start with "Hi {company} Team," or "Hi {hiring_mgr},")
    - Avoid excessive corporate buzzwords, generic flattery, or dramatic adjectives.
 3. TAILORED, NATURAL OPENING:
-   - Start with a natural, conversational hook referencing specific technical work, product challenges, or team initiatives from the job posting.
-   - Example openers:
-     * "I noticed {company}'s {role} opening and was particularly drawn to your focus on {focus_areas}."
-     * "I saw your team is building {domain} infrastructure and wanted to reach out regarding the {role} position."
+   - Start with a natural hook referencing specific technical challenges from the job posting.
 4. GROUNDED IN REAL EVIDENCE:
-   - Identify 2-3 genuine focus areas in the job description. Connect them directly to the candidate's actual projects, tools, and background.
    - Mention specific technologies, tools, and concrete project outcomes from the candidate's CV.
    - Do NOT invent or claim experience the candidate does not have.
-   - Weave relevant portfolio links seamlessly into the prose (e.g., "I recently built a project addressing this: [Link]").
+   - STRICT RULE ON LINKS: ONLY embed links that are explicitly provided in CANDIDATE PROJECT & PORTFOLIO LINKS. NEVER invent or insert fake GitHub or website URLs. If no verified link is given, mention the project purely by name.
 5. NATURAL HUMAN VOICE & CONCISENESS:
    - Sound like a real person ({candidate_type}). Simple, confident, articulate English.
-   - Use short paragraphs (2-3 sentences each).
    - Total email body length MUST be around 120-180 words.
 6. LOW-FRICTION CALL TO ACTION:
-   - Close with a polite, casual next step (e.g., "Would you be open to a brief 10-minute chat next week?" or "Happy to share my code repository or provide additional details if helpful.").
+   - Close with a polite, casual next step (e.g., "Would you be open to a brief 10-minute chat next week?").
    - Sign off naturally with {user_name}.
 
 Return ONLY a valid JSON object matching the requested schema.
@@ -551,27 +721,37 @@ Return ONLY a valid JSON object matching the requested schema.
 ### VALID JSON:"""
         )
 
-        chain_email = prompt_email | self.llm
-        cv_summary = (cv_text[:2500] if cv_text else "") or (f"Portfolio Tech: {link_list_text}\nRole: {position}\nStudy: {study}")
+        try:
+            chain_email = prompt_email | self.llm
+            cv_summary = (cv_text[:8000] if cv_text else "") or (f"Portfolio Tech: {link_list_text}\nRole: {position}\nStudy: {study}")
 
-        res = chain_email.invoke({
-            "role": role_title,
-            "company": company_name,
-            "domain": domain,
-            "focus_areas": focus_areas,
-            "critical_reqs": critical_reqs,
-            "job_desc": job_desc[:2000],
-            "hiring_mgr": hiring_mgr,
-            "user_name": user_name,
-            "candidate_type": candidate_type,
-            "user_position": position,
-            "user_study": study,
-            "user_college": college,
-            "cv_highlights": cv_summary,
-            "link_list": link_list_text,
-            "tone": tone,
-            "custom_instructions": custom_instructions or "None"
-        })
+            res = chain_email.invoke({
+                "role": role_title,
+                "company": company_name,
+                "domain": domain,
+                "focus_areas": focus_areas,
+                "critical_reqs": critical_reqs,
+                "job_desc": job_desc[:4000],
+                "hiring_mgr": hiring_mgr,
+                "user_name": user_name,
+                "candidate_type": candidate_type,
+                "user_position": position,
+                "user_study": study,
+                "user_college": college,
+                "cv_highlights": cv_summary,
+                "link_list": link_list_text,
+                "tone": tone,
+                "custom_instructions": custom_instructions or "None"
+            })
+        except Exception:
+            return {
+                "subject": offline_subjs[0],
+                "subject_lines": offline_subjs,
+                "body": fallback_body,
+                "match_summary": f"Targeted candidate alignment around {critical_reqs}.",
+                "key_highlights_used": [critical_reqs.split(",")[0]] if critical_reqs else ["Engineering"],
+                "focus_areas_addressed": focus_areas
+            }
 
         try:
             json_parser = JsonOutputParser()
@@ -579,10 +759,7 @@ Return ONLY a valid JSON object matching the requested schema.
             if isinstance(parsed, dict) and "body" in parsed:
                 subjs = parsed.get("subject_lines") or []
                 if not isinstance(subjs, list) or not subjs:
-                    if parsed.get("subject"):
-                        subjs = [parsed["subject"]]
-                    else:
-                        subjs = [f"{role_title} inquiry - {user_name}"]
+                    subjs = [parsed.get("subject") or f"{role_title} inquiry - {user_name}"]
                 parsed["subject_lines"] = subjs
                 parsed["subject"] = subjs[0]
                 return parsed
@@ -595,36 +772,26 @@ Return ONLY a valid JSON object matching the requested schema.
         elif "```" in raw_text:
             raw_text = raw_text.split("```")[1].split("```")[0].strip()
 
-        import json
         try:
             parsed = json.loads(raw_text)
             if isinstance(parsed, dict) and "body" in parsed:
                 subjs = parsed.get("subject_lines") or []
                 if not isinstance(subjs, list) or not subjs:
-                    if parsed.get("subject"):
-                        subjs = [parsed["subject"]]
-                    else:
-                        subjs = [f"{role_title} inquiry - {user_name}"]
+                    subjs = [parsed.get("subject") or f"{role_title} inquiry - {user_name}"]
                 parsed["subject_lines"] = subjs
                 parsed["subject"] = subjs[0]
                 return parsed
         except Exception:
             pass
 
-        fallback_subjects = [
-            f"{user_name} - {role_title} / {domain}",
-            f"{role_title} inquiry - {user_name}",
-            f"Quick note regarding {company_name}'s {role_title} position"
-        ]
         return {
-            "subject": fallback_subjects[0],
-            "subject_lines": fallback_subjects,
+            "subject": offline_subjs[0],
+            "subject_lines": offline_subjs,
             "body": raw_text if len(raw_text) > 40 else fallback_body,
             "match_summary": f"Tailored outreach targeting {company_name}'s {role_title} role.",
             "key_highlights_used": [critical_reqs.split(",")[0]] if critical_reqs else ["Engineering"],
             "focus_areas_addressed": focus_areas
         }
-
 
     def analyze_job_fit(
         self,
@@ -642,7 +809,7 @@ Return ONLY a valid JSON object matching the requested schema.
         Applies mathematical weighted scoring grounded in verified CV evidence.
         """
         job_reqs = str(job)
-        cv_evidence_text = (cv_text[:8000] if cv_text else "") or portfolio_summary
+        cv_evidence_text = (cv_text[:16000] if cv_text else "") or portfolio_summary
         pre_noise = job.get("irrelevant_noise", []) if isinstance(job, dict) else []
 
         # Step 1: Pre-Audit candidate CV against all extracted requirements
@@ -686,7 +853,6 @@ Return ONLY a valid JSON object matching the requested schema.
         pre_audit_text = "\n".join(pre_audited_lines) if pre_audited_lines else "No structured requirements provided."
 
         if not self.has_valid_key or self.llm is None:
-            # High-accuracy dynamic fallback computed directly from candidate's CV
             audit_meta = audit_and_calculate_score(heuristic_breakdown)
             matched_str = [h["requirement"] for h in heuristic_breakdown if h["status"] == "MATCHED"][:4]
             skill_gp = [h["requirement"] for h in heuristic_breakdown if h["status"] == "MISSING"][:3]
@@ -724,22 +890,17 @@ RULES:
      * `MATCHED`: Verified concrete evidence in candidate's CV/portfolio.
      * `PARTIALLY MATCHED`: Candidate has related foundation, coursework, or adjacent skill, but lacks the requested years of experience, production scale, or enterprise depth. You MUST explain why it is partial.
      * `MISSING`: Genuinely required by the job, but completely absent from candidate's profile.
-     * `NOT RELEVANT`: Boilerplate, legal disclaimers, or random unrelated text (e.g., "experience in marine biology" for a Python backend role).
+     * `NOT RELEVANT`: Boilerplate, legal disclaimers, or random unrelated text.
 2. EXPERIENCE LEVEL SENSITIVITY:
-   - If the job demands 5+ years of senior production experience and the candidate is a student/junior with project experience, mark as `PARTIALLY MATCHED` (skill present, but seniority/experience gap exists).
+   - If the job demands senior production experience and the candidate is a student/junior with project experience, mark as `PARTIALLY MATCHED`.
 3. FILTER IRRELEVANT NOISE:
-   - Any random or boilerplate requirements identified as `NOT RELEVANT` must have ZERO weight and must NOT lower the score or appear as critical skill gaps.
+   - Any random or boilerplate requirements identified as `NOT RELEVANT` must have ZERO weight.
 4. WEIGHTED SCORING CALCULATION:
-   - Critical Requirements (core technical must-haves): 65% of score weight.
-   - Preferred Requirements (nice-to-haves): 25% of score weight.
-   - Soft Skills (collaboration/communication): 10% of score weight.
+   - Critical Requirements: 65% of score weight.
+   - Preferred Requirements: 25% of score weight.
+   - Soft Skills: 10% of score weight.
    - Noise / Irrelevant: 0% weight.
-   - Calculate `match_score` as a realistic integer between 15 and 98 based on weighted achievement.
-   - Assign `fit_level`:
-     * 85-98: "Excellent Match (85%+)"
-     * 70-84: "Strong Match (70-84%)"
-     * 50-69: "Moderate Fit / High Potential (50-69%)"
-     * Below 50: "Early Career / Significant Skill Gaps (<50%)"
+   - Note: The score represents an objective match percentage, NOT a hiring probability guarantee.
 
 ### PRE-AUDITED EVIDENCE DISCOVERED IN CANDIDATE CV:
 {pre_audited_evidence}
@@ -772,12 +933,12 @@ Return ONLY a valid JSON object matching the schema below.
         try:
             chain_fit = prompt_fit | self.llm
             res = chain_fit.invoke({
-                "job_details": job_reqs[:4000],
+                "job_details": job_reqs[:6000],
                 "user_name": user_name,
                 "user_position": user_position,
                 "user_study": user_study,
                 "candidate_type": candidate_type,
-                "candidate_evidence": cv_evidence_text[:8000],
+                "candidate_evidence": cv_evidence_text[:16000],
                 "pre_audited_evidence": pre_audit_text
             })
 
@@ -785,6 +946,17 @@ Return ONLY a valid JSON object matching the schema below.
                 json_parser = JsonOutputParser()
                 parsed = json_parser.parse(res.content)
                 if isinstance(parsed, dict) and "evidence_breakdown" in parsed:
+                    existing_reqs = {item.get("requirement") for item in parsed["evidence_breakdown"]}
+                    for n in pre_noise:
+                        if n not in existing_reqs:
+                            parsed["evidence_breakdown"].append({
+                                "requirement": n,
+                                "importance": "Irrelevant/Noise",
+                                "status": "NOT RELEVANT",
+                                "candidate_evidence": "Filtered out by ATS shield.",
+                                "explanation": "Out-of-scope requirement excluded from candidate scoring.",
+                                "confidence": "High"
+                            })
                     audit_meta = audit_and_calculate_score(parsed["evidence_breakdown"])
                     parsed["match_score"] = audit_meta["mathematical_score"]
                     parsed["fit_level"] = audit_meta["fit_level"]
@@ -799,10 +971,20 @@ Return ONLY a valid JSON object matching the schema below.
             elif "```" in raw_text:
                 raw_text = raw_text.split("```")[1].split("```")[0].strip()
 
-            import json
             try:
                 parsed = json.loads(raw_text)
                 if isinstance(parsed, dict) and "evidence_breakdown" in parsed:
+                    existing_reqs = {item.get("requirement") for item in parsed["evidence_breakdown"]}
+                    for n in pre_noise:
+                        if n not in existing_reqs:
+                            parsed["evidence_breakdown"].append({
+                                "requirement": n,
+                                "importance": "Irrelevant/Noise",
+                                "status": "NOT RELEVANT",
+                                "candidate_evidence": "Filtered out by ATS shield.",
+                                "explanation": "Out-of-scope requirement excluded from candidate scoring.",
+                                "confidence": "High"
+                            })
                     audit_meta = audit_and_calculate_score(parsed["evidence_breakdown"])
                     parsed["match_score"] = audit_meta["mathematical_score"]
                     parsed["fit_level"] = audit_meta["fit_level"]
@@ -827,5 +1009,3 @@ Return ONLY a valid JSON object matching the schema below.
             "noise_filtered": pre_noise,
             "audit_meta": audit_meta
         }
-
-

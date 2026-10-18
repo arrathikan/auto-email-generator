@@ -1,14 +1,45 @@
+# Environment variables and secrets
 .env
 *.env
+*.key
+.smtp_secret.key
+*.pem
+
+# Python cache and bytecode
 __pycache__/
-*.pyc
-.DS_Store
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+venv/
+env/
+ENV/
 app_env/
 */app_env/
+
+# Operating system files
+.DS_Store
+Thumbs.db
+
+# Vector databases & Chroma
 vectorstore/
 */vectorstore/
+chroma/
+*/chroma/
+
+# Uploaded CV files and user documents
 uploads/
 */uploads/
+
+# Local databases and SQLite data
 data/
 */data/
 *.db
+*.sqlite
+*.sqlite3
+
+# Pytest and test artifacts
+.pytest_cache/
+.coverage
+htmlcov/

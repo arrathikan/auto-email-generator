@@ -1,9 +1,29 @@
+# Environment variables and secrets
 .env
+*.env
+*.key
+.smtp_secret.key
+*.pem
+
+# Python cache and bytecode
 __pycache__/
-*.pyc
-.DS_Store
+*.py[cod]
+
+# Virtual environments
 app_env/
+venv/
+env/
+
+# Operating system files
+.DS_Store
+
+# Data, vectorstore, and uploads
 vectorstore/
 uploads/
 data/
 *.db
+*.sqlite
+*.sqlite3
+
+# Test caches
+.pytest_cache/

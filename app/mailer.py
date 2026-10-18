@@ -29,6 +29,16 @@ def auto_detect_smtp_server(email_address: str) -> tuple[str, int]:
         return f"smtp.{domain}", 465
     return "smtp.gmail.com", 465
 
+def _sanitize_error_text(error_msg: str, sensitive_items: list[str]) -> str:
+    """
+    Prevents passwords and secret tokens from ever being exposed through logs or UI output.
+    """
+    sanitized = str(error_msg)
+    for s in sensitive_items:
+        if s and len(s) >= 3:
+            sanitized = sanitized.replace(s, "[REDACTED]")
+    return sanitized
+
 def send_email_smtp(
     user_id: int,
     recipient_email: str,
@@ -43,8 +53,9 @@ def send_email_smtp(
 ) -> dict:
     """
     Sends an email directly via SMTP with optional CV PDF attachment.
+    SMTP passwords are never stored or logged in plaintext.
     """
-    # Check configured credentials
+    # Check configured credentials (decrypted transparently by tracker)
     config = tracker.get_user_mail_config(user_id) if user_id else {}
     from_email = (sender_email or config.get("email_address", "")).strip()
     pwd = (app_password or config.get("app_password", "")).strip()
@@ -52,7 +63,7 @@ def send_email_smtp(
     if not from_email or not pwd:
         return {
             "success": False,
-            "error": "SMTP credentials not configured. Please enter your Sender Email and App Password in the SMTP Settings below."
+            "error": "SMTP credentials not configured. Please enter your Sender Email and App Password in the SMTP Settings."
         }
 
     if not recipient_email or "@" not in recipient_email:
@@ -115,7 +126,8 @@ def send_email_smtp(
             "error": "Authentication failed. Please verify your email and App Password (for Gmail, use a 16-character App Password, not your regular password)."
         }
     except Exception as e:
+        safe_err = _sanitize_error_text(str(e), [pwd])
         return {
             "success": False,
-            "error": f"Failed to send email: {str(e)}"
+            "error": f"Failed to send email: {safe_err}"
         }
