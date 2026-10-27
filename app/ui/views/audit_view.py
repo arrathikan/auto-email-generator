@@ -94,33 +94,95 @@ def render_audit_view():
 
         if evidence_breakdown:
             st.markdown('<div class="career-card">', unsafe_allow_html=True)
-            st.markdown('<div class="card-title">📋 Requirement Comparison Breakdown</div>', unsafe_allow_html=True)
-            st.caption("Item-by-item verification showing exact evidence extracted from your CV.")
+            st.markdown('<div class="card-title">📋 Structured Requirement Breakdown & Evidence Audit</div>', unsafe_allow_html=True)
+            st.caption("Item-by-item verification comparing job requirements against uploaded CV evidence with technical normalization.")
 
-            for ev in evidence_breakdown:
+            # Filter or group by Category
+            categories = [
+                "All Categories",
+                "Critical Technical Skill",
+                "Preferred Technical Skill",
+                "Experience Requirement",
+                "Educational Qualification",
+                "Soft Skill"
+            ]
+            selected_cat = st.selectbox("Filter Requirements by Category:", categories, index=0)
+
+            filtered_evidence = [
+                e for e in evidence_breakdown 
+                if selected_cat == "All Categories" or str(e.get("category", "")).strip().lower() == selected_cat.lower()
+            ]
+
+            for idx, ev in enumerate(filtered_evidence):
                 req = ev.get("requirement", "")
+                cat = ev.get("category", "General Requirement")
                 imp = ev.get("importance", "Core requirement")
                 status = str(ev.get("status", "MISSING")).upper()
+                exact_passage = ev.get("supporting_evidence", "")
                 cand_ev = ev.get("candidate_evidence", "")
+                explanation = ev.get("explanation", "")
+                confidence = ev.get("confidence", "Medium")
+                uncertainty = ev.get("uncertainty", 0.15)
+                uncertainty_pct = int(round(float(uncertainty) * 100)) if uncertainty is not None else 15
 
                 is_match = "MATCHED" in status and "PARTIAL" not in status
                 is_part = "PARTIAL" in status
                 is_noise = "NOT RELEVANT" in status
 
-                stat_badge = "✓ Matched" if is_match else ("◐ Partial" if is_part else ("— Excluded Noise" if is_noise else "○ Not Found"))
+                stat_badge = "✓ Matched" if is_match else ("◐ Partially Matched" if is_part else ("— Excluded Noise" if is_noise else "○ Missing"))
                 badge_class = "matched" if is_match else ("partial" if is_part else "gap")
+                conf_color = "#10b981" if confidence.lower() == "high" else ("#f59e0b" if confidence.lower() == "medium" else "#ef4444")
 
                 st.markdown(f"""
-                <div class="audit-row">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem;">
-                        <span style="font-weight: 700; color: #f8fafc; font-size: 0.94rem;">{req}</span>
-                        <span class="skill-chip {badge_class}" style="margin: 0; padding: 0.2rem 0.6rem; font-size: 0.76rem;">{stat_badge} ({imp})</span>
+                <div class="audit-row" style="margin-bottom: 0.75rem; border-left: 3px solid {conf_color};">
+                    <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.4rem;">
+                        <div>
+                            <span style="font-weight: 700; color: #f8fafc; font-size: 1rem;">{req}</span>
+                            <span style="font-size: 0.75rem; color: #94a3b8; margin-left: 0.5rem; background: rgba(255,255,255,0.06); padding: 0.15rem 0.5rem; border-radius: 4px;">{cat}</span>
+                        </div>
+                        <div style="display: flex; gap: 0.4rem; align-items: center;">
+                            <span class="skill-chip {badge_class}" style="margin: 0; padding: 0.2rem 0.65rem; font-size: 0.78rem;">{stat_badge}</span>
+                            <span style="font-size: 0.72rem; color: {conf_color}; background: {conf_color}18; padding: 0.18rem 0.5rem; border-radius: 4px; border: 1px solid {conf_color}33;">
+                                {confidence} Conf (±{uncertainty_pct}%)
+                            </span>
+                        </div>
                     </div>
-                    <div style="font-size: 0.84rem; color: #94a3b8;">
-                        <b style="color: #cbd5e1;">Profile Evidence:</b> {cand_ev if cand_ev else "No direct evidence found in uploaded resume"}
+                    <div style="font-size: 0.85rem; color: #cbd5e1; margin-bottom: 0.25rem;">
+                        <b>Assessment:</b> {explanation if explanation else cand_ev}
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
+
+                # Expandable Evidence View
+                with st.expander(f"🔍 Supporting CV Passage & Verification Details — {req}", expanded=False):
+                    col_ev1, col_ev2 = st.columns([1.5, 1])
+                    with col_ev1:
+                        st.markdown("**Exact Supporting CV Passage:**")
+                        if exact_passage:
+                            st.markdown(f"""
+                            <div style="background: rgba(15, 23, 42, 0.7); border-left: 3px solid #6366f1; padding: 0.65rem 0.9rem; border-radius: 6px; font-size: 0.84rem; color: #e2e8f0; font-family: monospace; white-space: pre-wrap;">
+{exact_passage}
+                            </div>
+                            """, unsafe_allow_html=True)
+                        else:
+                            st.markdown(f"""
+                            <div style="background: rgba(15, 23, 42, 0.4); border-left: 3px solid #64748b; padding: 0.5rem 0.8rem; border-radius: 6px; font-size: 0.82rem; color: #94a3b8; font-style: italic;">
+                                No exact supporting CV passage identified in candidate profile.
+                            </div>
+                            """, unsafe_allow_html=True)
+
+                    with col_ev2:
+                        st.markdown("**Audit Metadata:**")
+                        st.markdown(f"""
+                        <ul style="font-size: 0.8rem; color: #94a3b8; line-height: 1.7; padding-left: 1.2rem; margin: 0;">
+                            <li><b>Requirement:</b> {req}</li>
+                            <li><b>Category:</b> {cat}</li>
+                            <li><b>Importance:</b> {imp}</li>
+                            <li><b>Match Status:</b> <span style="color: {'#10b981' if is_match else ('#f59e0b' if is_part else '#ef4444')};">{status}</span></li>
+                            <li><b>Model Confidence:</b> {confidence}</li>
+                            <li><b>Uncertainty Metric:</b> ±{uncertainty_pct}%</li>
+                        </ul>
+                        """, unsafe_allow_html=True)
 
             st.markdown('</div>', unsafe_allow_html=True)
 
@@ -137,9 +199,9 @@ def render_audit_view():
                         Your match score is calculated using weighted mathematical scoring based on verified evidence in your profile:
                     </p>
                     <ul style="font-size: 0.86rem; color: #94a3b8; line-height: 1.8;">
-                        <li><b>Critical Core Requirements (65% Weight):</b> {c_acc.get('percentage', 0)}% satisfied ({c_acc.get('matched', 0)} of {c_acc.get('total', 0)} verified)</li>
-                        <li><b>Preferred Requirements (25% Weight):</b> {p_acc.get('percentage', 0)}% satisfied ({p_acc.get('matched', 0)} of {p_acc.get('total', 0)} verified)</li>
-                        <li><b>Soft / Collaborative Skills (10% Weight):</b> {s_acc.get('percentage', 0)}% satisfied ({s_acc.get('matched', 0)} of {s_acc.get('total', 0)} verified)</li>
+                        <li><b>Critical Core Requirements (65% Weight):</b> {c_acc.get('percentage', 0)}% satisfied ({c_acc.get('matched', 0)} of {c_acc.get('total', 0)} verified) — includes Critical Technical Skills, Experience Requirements, and Educational Qualifications</li>
+                        <li><b>Preferred Requirements (25% Weight):</b> {p_acc.get('percentage', 0)}% satisfied ({p_acc.get('matched', 0)} of {p_acc.get('total', 0)} verified) — includes Preferred Technical Skills</li>
+                        <li><b>Soft / Collaborative Skills (10% Weight):</b> {s_acc.get('percentage', 0)}% satisfied ({s_acc.get('matched', 0)} of {s_acc.get('total', 0)} verified) — includes Teamwork & Interpersonal Competencies</li>
                     </ul>
                     <div style="font-family: monospace; font-size: 0.8rem; background: rgba(0,0,0,0.3); padding: 0.5rem 0.85rem; border-radius: 8px; color: #818cf8;">
                         Audit Calculation: {formula_str} = {score}%
