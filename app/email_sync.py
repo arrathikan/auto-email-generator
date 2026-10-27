@@ -1,7 +1,6 @@
 """
-Lightweight mail dispatch module.
-(All IMAP mailbox syncing and email reply analysis systems have been permanently removed.)
+Backward compatibility facade for mail dispatch.
 """
-from mailer import send_email_smtp, auto_detect_smtp_server
+from services.mailer import send_email_smtp, auto_detect_smtp_server
 
 __all__ = ["send_email_smtp", "auto_detect_smtp_server"]

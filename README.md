@@ -64,24 +64,41 @@
 auto-email-generator/
 ├── .env.example              # Template for environment variables and secrets
 ├── .gitignore                # Git exclusions (credentials, databases, uploads, keys)
+├── pytest.ini                # Pytest configuration and pythonpath mappings
 ├── requirements.txt          # Python dependencies
 ├── README.md                 # Project documentation and guide
 ├── app/
-│   ├── main.py               # Main Streamlit application and UI studio
-│   ├── chain.py              # LLM prompts, evidence audit, and email generator
-│   ├── cv_parser.py          # Resilient CV parser with validation and OCR fallback
-│   ├── job_loader.py         # SSRF-protected job description fetcher
-│   ├── mailer.py             # SMTP email dispatch and credential sanitization
-│   ├── portfolio.py          # Multi-user isolated ChromaDB vector storage
-│   ├── tracker.py            # Argon2id auth, SQLite database, and Fernet encryption
-│   ├── email_sync.py         # Mail dispatch export interface
-│   ├── requirements.txt      # Module dependencies
-│   ├── README.md             # App-level documentation
-│   ├── assets/               # Visual UI assets
+│   ├── main.py               # Streamlit application entry point and router
+│   ├── assets/               # Static images and UI visuals
+│   ├── core/                 # Core utilities, config, security & auth
+│   │   ├── config.py         # App-wide directory and database paths
+│   │   ├── security.py       # Fernet SMTP encryption & key management
+│   │   ├── auth.py           # Argon2id password hashing & legacy migration
+│   │   └── database.py       # SQLite connection and user schemas
+│   ├── services/             # Domain logic and external services
+│   │   ├── llm_chain.py      # LLM orchestration, regex matching, scoring
+│   │   ├── cv_parser.py      # PDF/DOCX/CSV parsing & validation
+│   │   ├── job_loader.py     # SSRF-protected job scraping
+│   │   ├── portfolio.py      # ChromaDB multi-tenant isolated vector store
+│   │   └── mailer.py         # SMTP transmission & auto host detection
+│   ├── styles/               # Styling system & design tokens
+│   │   └── theme.py          # Dark canvas, glassmorphic CSS, micro-animations
+│   ├── ui/                   # Modular UI components and views
+│   │   ├── components/       # Reusable components (e.g. sidebar navigation)
+│   │   └── views/            # Screen views (dashboard, profile, analyze, audit, email)
+│   ├── utils/                # General helpers (email/EML builders, text cleaners)
+│   ├── chain.py              # Backward-compatibility facade
+│   ├── tracker.py            # Backward-compatibility facade
+│   ├── portfolio.py          # Backward-compatibility facade
+│   ├── cv_parser.py          # Backward-compatibility facade
+│   ├── job_loader.py         # Backward-compatibility facade
+│   ├── mailer.py             # Backward-compatibility facade
+│   ├── email_sync.py         # Backward-compatibility facade
 │   ├── data/                 # SQLite database and vector storage (git-ignored)
 │   └── uploads/              # Uploaded candidate CVs (git-ignored)
 └── tests/
     ├── conftest.py           # Pytest test environment fixtures
+    ├── test_modular_architecture.py # Verification of modular structure
     ├── test_auth_and_crypto.py # Tests for Argon2id, legacy migration, SQL injection, and Fernet
     ├── test_chain_matching.py  # Tests for skill matching, word boundaries, and URL validation
     ├── test_cv_parser.py     # Tests for CV extraction, file size, and scanned PDF detection
